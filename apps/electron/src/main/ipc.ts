@@ -1820,6 +1820,29 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     }
   })
 
+  // Get sound enabled setting
+  ipcMain.handle(IPC_CHANNELS.SOUND_GET_ENABLED, async () => {
+    const { getSoundEnabled } = await import('@craft-agent/shared/config/storage')
+    return getSoundEnabled()
+  })
+
+  // Set sound enabled setting
+  ipcMain.handle(IPC_CHANNELS.SOUND_SET_ENABLED, async (_event, enabled: boolean) => {
+    const { setSoundEnabled } = await import('@craft-agent/shared/config/storage')
+    setSoundEnabled(enabled)
+  })
+
+  // Get sound file path (works in both dev and production)
+  ipcMain.handle(IPC_CHANNELS.SOUND_GET_PATH, () => {
+    if (app.isPackaged) {
+      // Production: use file:// URL from resources
+      return `file://${join(process.resourcesPath, 'sounds', 'complete.wav')}`
+    } else {
+      // Dev: serve from Vite's public directory (localhost can't load file:// URLs)
+      return 'http://localhost:5173/sounds/complete.wav'
+    }
+  })
+
   // Update app badge count
   ipcMain.handle(IPC_CHANNELS.BADGE_UPDATE, async (_event, count: number) => {
     const { updateBadgeCount } = await import('./notifications')

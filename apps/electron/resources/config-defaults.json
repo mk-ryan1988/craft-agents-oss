@@ -4,6 +4,7 @@
   "defaults": {
     "authType": "api_key",
     "notificationsEnabled": true,
+    "soundEnabled": true,
     "colorTheme": "default"
   },
   "workspaceDefaults": {

@@ -350,6 +350,7 @@ export default function AppSettingsPage() {
 
   // Notifications state
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
+  const [soundEnabled, setSoundEnabled] = useState(true)
 
   // Auto-update state
   const updateChecker = useUpdateChecker()
@@ -369,13 +370,15 @@ export default function AppSettingsPage() {
     const loadSettings = async () => {
       if (!window.electronAPI) return
       try {
-        const [billing, notificationsOn] = await Promise.all([
+        const [billing, notificationsOn, soundOn] = await Promise.all([
           window.electronAPI.getBillingMethod(),
           window.electronAPI.getNotificationsEnabled(),
+          window.electronAPI.getSoundEnabled(),
         ])
         setAuthType(billing.authType)
         setHasCredential(billing.hasCredential)
         setNotificationsEnabled(notificationsOn)
+        setSoundEnabled(soundOn)
       } catch (error) {
         console.error('Failed to load settings:', error)
       } finally {
@@ -560,6 +563,11 @@ export default function AppSettingsPage() {
     await window.electronAPI.setNotificationsEnabled(enabled)
   }, [])
 
+  const handleSoundEnabledChange = useCallback(async (enabled: boolean) => {
+    setSoundEnabled(enabled)
+    await window.electronAPI.setSoundEnabled(enabled)
+  }, [])
+
   return (
     <div className="h-full flex flex-col">
       <PanelHeader title="App Settings" actions={<HeaderMenu route={routes.view.settings('app')} helpFeature="app-settings" />} />
@@ -617,6 +625,12 @@ export default function AppSettingsPage() {
                   description="Get notified when AI finishes working in a chat."
                   checked={notificationsEnabled}
                   onCheckedChange={handleNotificationsEnabledChange}
+                />
+                <SettingsToggle
+                  label="Completion sound"
+                  description="Play a sound when AI finishes working."
+                  checked={soundEnabled}
+                  onCheckedChange={handleSoundEnabledChange}
                 />
               </SettingsCard>
             </SettingsSection>

@@ -20,6 +20,7 @@ import { useGlobalShortcuts } from '@/hooks/keyboard'
 import { useWindowCloseHandler } from '@/hooks/useWindowCloseHandler'
 import { useOnboarding } from '@/hooks/useOnboarding'
 import { useNotifications } from '@/hooks/useNotifications'
+import { useCompletionSound } from '@/hooks/useCompletionSound'
 import { useSession } from '@/hooks/useSession'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { NavigationProvider } from '@/contexts/NavigationContext'
@@ -327,6 +328,9 @@ export default function App() {
     enabled: notificationsEnabled,
   })
 
+  // Completion sound - plays when agent finishes and window is not focused
+  const { playCompletionSound } = useCompletionSound({ isWindowFocused })
+
   // Load workspaces, sessions, model, notifications setting, and drafts when app is ready
   useEffect(() => {
     if (appState !== 'ready') return
@@ -524,7 +528,7 @@ export default function App() {
           newMetaMap.set(sessionId, extractSessionMeta(updatedSession))
           store.set(sessionMetaMapAtom, newMetaMap)
 
-          // Show notification on complete (when window is not focused)
+          // Show notification and play sound on complete (when window is not focused)
           if (event.type === 'complete') {
             // Get the last assistant message as preview
             const lastMessage = updatedSession.messages.findLast(
@@ -532,6 +536,7 @@ export default function App() {
             )
             const preview = lastMessage?.content?.substring(0, 100) || undefined
             showSessionNotification(updatedSession, preview)
+            playCompletionSound()
           }
         }
 

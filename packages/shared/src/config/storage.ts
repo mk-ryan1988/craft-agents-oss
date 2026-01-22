@@ -49,6 +49,7 @@ export interface StoredConfig {
   model?: string;
   // Notifications
   notificationsEnabled?: boolean;  // Desktop notifications for task completion (default: true)
+  soundEnabled?: boolean;  // Completion sound when agent finishes (default: true)
   // Appearance
   colorTheme?: string;  // ID of selected preset theme (e.g., 'dracula', 'nord'). Default: 'default'
   // Auto-update
@@ -249,6 +250,29 @@ export function setNotificationsEnabled(enabled: boolean): void {
   const config = loadStoredConfig();
   if (!config) return;
   config.notificationsEnabled = enabled;
+  saveConfig(config);
+}
+
+/**
+ * Get whether completion sound is enabled.
+ * Defaults to true if not set.
+ */
+export function getSoundEnabled(): boolean {
+  const config = loadStoredConfig();
+  if (config?.soundEnabled !== undefined) {
+    return config.soundEnabled;
+  }
+  const defaults = loadConfigDefaults();
+  return defaults.defaults.soundEnabled;
+}
+
+/**
+ * Set whether completion sound is enabled.
+ */
+export function setSoundEnabled(enabled: boolean): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.soundEnabled = enabled;
   saveConfig(config);
 }
 

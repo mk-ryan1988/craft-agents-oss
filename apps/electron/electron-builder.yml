@@ -40,6 +40,9 @@ extraResources:
   # Linux AppImage self-update script
   - from: scripts/self-update-linux.sh
     to: self-update-linux.sh
+  # Completion sound
+  - from: resources/sounds
+    to: sounds
 
 # Disable ASAR to avoid decompression overhead and click delays
 asar: false

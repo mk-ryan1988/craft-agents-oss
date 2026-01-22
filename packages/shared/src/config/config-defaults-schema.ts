@@ -13,6 +13,7 @@ export interface ConfigDefaults {
   defaults: {
     authType: AuthType;
     notificationsEnabled: boolean;
+    soundEnabled: boolean;
     colorTheme: string;
   };
   workspaceDefaults: {
@@ -35,6 +36,7 @@ export const BUNDLED_CONFIG_DEFAULTS: ConfigDefaults = {
   defaults: {
     authType: 'api_key',
     notificationsEnabled: true,
+    soundEnabled: true,
     colorTheme: 'default',
   },
   workspaceDefaults: {
