@@ -474,8 +474,10 @@ function AppShellContent({
           contextValue.onSessionOptionsChange(session.selected, { permissionMode: nextMode })
         }
       }, when: () => !document.querySelector('[role="dialog"]') && document.activeElement?.tagName !== 'TEXTAREA' },
-      // Sidebar toggle (CMD+\ like VS Code, avoids conflict with CMD+B for bold)
-      { key: '\\', cmd: true, action: () => setIsSidebarVisible(v => !v) },
+      // Sidebar toggle
+      { key: 'o', cmd: true, action: () => setIsSidebarVisible(v => !v) },
+      // Right sidebar (chat info) toggle
+      { key: 'b', cmd: true, action: () => setIsRightSidebarVisible(v => !v) },
       // New chat
       { key: 'n', cmd: true, action: () => handleNewChat(true) },
       // Settings
