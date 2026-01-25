@@ -1120,6 +1120,16 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     }
   })
 
+  // Get session changes (for reviewing edits before commit)
+  ipcMain.handle(IPC_CHANNELS.GET_SESSION_CHANGES, async (_event, sessionId: string) => {
+    try {
+      return await sessionManager.getSessionChanges(sessionId)
+    } catch (error) {
+      ipcLog.error('Failed to get session changes:', error)
+      return { files: [], isGitRepo: false }
+    }
+  })
+
   // Session file watcher state - only one session watched at a time
   let sessionFileWatcher: import('fs').FSWatcher | null = null
   let watchedSessionId: string | null = null

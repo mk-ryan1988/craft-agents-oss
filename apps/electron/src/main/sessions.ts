@@ -1967,6 +1967,103 @@ export class SessionManager {
     sessionLog.info(`Updated message ${messageId} content in session ${sessionId}`)
   }
 
+  /**
+   * Get all file changes made during a session.
+   * Compares files touched by Edit/Write tools against git HEAD (or original state).
+   * Used by Session Changes View for reviewing edits before committing.
+   */
+  async getSessionChanges(sessionId: string): Promise<import('@craft-agent/shared/sessions').SessionChangesResult> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) {
+      return { files: [], isGitRepo: false }
+    }
+
+    // Ensure messages are loaded
+    await this.ensureMessagesLoaded(managed)
+
+    // Get working directory
+    const workingDir = managed.workingDirectory
+    if (!workingDir) {
+      return { files: [], isGitRepo: false }
+    }
+
+    // Import git utilities
+    const { isGitRepo, getFileDiff, isBinaryFile } = await import('./git')
+    const { getSessionTouchedFiles } = await import('@craft-agent/shared/sessions')
+
+    // Check if in git repo
+    const inGitRepo = isGitRepo(workingDir)
+
+    // Get list of files touched during session (may be relative or absolute paths)
+    const touchedFiles = getSessionTouchedFiles(managed.messages)
+
+    if (touchedFiles.length === 0) {
+      return { files: [], isGitRepo: inGitRepo, workingDirectory: workingDir }
+    }
+
+    // Convert relative paths to absolute paths using working directory
+    const { join, isAbsolute } = await import('path')
+    const absoluteFiles = touchedFiles.map(filePath =>
+      isAbsolute(filePath) ? filePath : join(workingDir, filePath)
+    )
+
+    // Compute diffs for each file (in parallel)
+    const diffPromises = absoluteFiles.map(async (filePath) => {
+      // Skip binary files
+      if (isBinaryFile(filePath)) {
+        return {
+          filePath,
+          status: 'modified' as const,
+          additions: 0,
+          deletions: 0,
+          original: '',
+          modified: '',
+          error: 'Binary file - diff not available',
+        }
+      }
+
+      if (!inGitRepo) {
+        // Without git, we can only show the file was touched
+        return {
+          filePath,
+          status: 'modified' as const,
+          additions: 0,
+          deletions: 0,
+          original: '',
+          modified: '',
+          error: 'Not a git repository - line counts unavailable',
+        }
+      }
+
+      try {
+        return await getFileDiff(workingDir, filePath)
+      } catch (error) {
+        return {
+          filePath,
+          status: 'modified' as const,
+          additions: 0,
+          deletions: 0,
+          original: '',
+          modified: '',
+          error: error instanceof Error ? error.message : 'Failed to compute diff',
+        }
+      }
+    })
+
+    const files = await Promise.all(diffPromises)
+
+    // Filter out files with no net changes (reverted to original)
+    const changedFiles = files.filter(f =>
+      f.additions > 0 || f.deletions > 0 || f.error
+    )
+
+    return {
+      files: changedFiles,
+      isGitRepo: inGitRepo,
+      workingDirectory: workingDir,
+    }
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {

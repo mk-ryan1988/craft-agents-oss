@@ -384,6 +384,55 @@ function stripSessionFolderPath(filePath: string, sessionFolderPath?: string): s
   return filePath
 }
 
+/**
+ * Compute line change counts for Edit/Write tools.
+ * Returns { additions, deletions } based on old_string vs new_string.
+ */
+function computeEditLineCounts(
+  toolInput?: Record<string, unknown>,
+  toolName?: string
+): { additions: number; deletions: number } | null {
+  if (!toolInput) return null
+
+  // Only for Edit and Write tools
+  if (toolName !== 'Edit' && toolName !== 'Write') return null
+
+  const oldString = (toolInput.old_string as string) || ''
+  const newString = (toolInput.new_string as string) || (toolInput.content as string) || ''
+
+  // For Write tool, old_string is typically empty (new file)
+  // For Edit tool, both old_string and new_string are provided
+
+  if (!oldString && !newString) return null
+
+  const oldLines = oldString ? oldString.split('\n') : []
+  const newLines = newString ? newString.split('\n') : []
+
+  // Simple diff: compare line counts
+  // A more sophisticated approach would use LCS, but this gives a reasonable estimate
+  const oldSet = new Set(oldLines)
+  const newSet = new Set(newLines)
+
+  let additions = 0
+  let deletions = 0
+
+  // Lines in new but not in old = additions
+  for (const line of newLines) {
+    if (!oldSet.has(line)) {
+      additions++
+    }
+  }
+
+  // Lines in old but not in new = deletions
+  for (const line of oldLines) {
+    if (!newSet.has(line)) {
+      deletions++
+    }
+  }
+
+  return { additions, deletions }
+}
+
 /** Format tool input as a concise summary - CSS truncate handles overflow */
 function formatToolInput(
   input?: Record<string, unknown>,
@@ -685,6 +734,23 @@ function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath }
         {!isBackgrounded && inputSummary && (
           <span className="opacity-50 truncate min-w-0">{inputSummary}</span>
         )}
+        {/* Line counts for completed Edit/Write tools */}
+        {(() => {
+          const lineCounts = isComplete && (activity.toolName === 'Edit' || activity.toolName === 'Write')
+            ? computeEditLineCounts(activity.toolInput, activity.toolName)
+            : null
+          if (!lineCounts || (lineCounts.additions === 0 && lineCounts.deletions === 0)) return null
+          return (
+            <span className="shrink-0 text-xs font-mono flex gap-1">
+              {lineCounts.additions > 0 && (
+                <span className="text-success">+{lineCounts.additions}</span>
+              )}
+              {lineCounts.deletions > 0 && (
+                <span className="text-destructive">-{lineCounts.deletions}</span>
+              )}
+            </span>
+          )
+        })()}
         {activity.status === 'error' && activity.error && (
           <>
             <span className="text-destructive/60 shrink-0">·</span>

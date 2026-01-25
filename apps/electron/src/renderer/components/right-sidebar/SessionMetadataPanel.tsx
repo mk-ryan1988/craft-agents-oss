@@ -16,6 +16,7 @@ import { Input } from '../ui/input'
 import { Textarea } from '../ui/textarea'
 import { HorizontalResizeHandle } from '../ui/horizontal-resize-handle'
 import { SessionFilesSection } from './SessionFilesSection'
+import { SessionChangesSection } from './SessionChangesSection'
 import * as storage from '@/lib/local-storage'
 
 export interface SessionMetadataPanelProps {
@@ -228,9 +229,13 @@ export function SessionMetadataPanel({ sessionId, closeButton }: SessionMetadata
         onResizeEnd={handleResizeEnd}
       />
 
-      {/* Files section - takes remaining space */}
-      <div className="flex-1 min-h-0 overflow-hidden">
-        <SessionFilesSection sessionId={sessionId} />
+      {/* Bottom section - Files and Changes fill remaining space */}
+      <div className="flex-1 min-h-0 flex flex-col">
+        {/* Files section - shrinks to content */}
+        <SessionFilesSection sessionId={sessionId} className="shrink-0" />
+
+        {/* Changes section - grows to fill remaining space */}
+        <SessionChangesSection sessionId={sessionId} className="flex-1 min-h-0" />
       </div>
     </div>
   )

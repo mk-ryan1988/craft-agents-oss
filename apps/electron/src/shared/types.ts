@@ -479,6 +479,9 @@ export const IPC_CHANNELS = {
   UNWATCH_SESSION_FILES: 'sessions:unwatchFiles',  // Stop watching
   SESSION_FILES_CHANGED: 'sessions:filesChanged',  // Event: main → renderer
 
+  // Session changes (for reviewing edits before commit)
+  GET_SESSION_CHANGES: 'sessions:getChanges',
+
   // Theme
   GET_SYSTEM_THEME: 'theme:getSystemPreference',
   SYSTEM_THEME_CHANGED: 'theme:systemChanged',
@@ -773,6 +776,9 @@ export interface ElectronAPI {
   watchSessionFiles(sessionId: string): Promise<void>
   unwatchSessionFiles(): Promise<void>
   onSessionFilesChanged(callback: (sessionId: string) => void): () => void
+
+  // Session changes (for reviewing edits before commit)
+  getSessionChanges(sessionId: string): Promise<import('@craft-agent/shared/sessions').SessionChangesResult>
 
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>

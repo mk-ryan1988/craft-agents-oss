@@ -367,7 +367,7 @@ export function SessionFilesSection({ sessionId, className }: SessionFilesSectio
   }
 
   return (
-    <div className={cn('flex flex-col h-full min-h-0', className)}>
+    <div className={cn('flex flex-col min-h-0', className)}>
       {/* Header - matches sidebar styling with select-none, extra top padding for visual balance */}
       <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0 select-none">
         <span className="text-xs font-medium text-muted-foreground">Files</span>
@@ -375,7 +375,8 @@ export function SessionFilesSection({ sessionId, className }: SessionFilesSectio
 
       {/* File tree - px-2 is on nav to match LeftSidebar exactly (constrains grid width) */}
       {/* overflow-x-hidden prevents horizontal scroll, forcing truncation */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden pb-2 min-h-0">
+      {/* max-h limits height so Changes section is visible without excessive scrolling */}
+      <div className="overflow-y-auto overflow-x-hidden pb-2 min-h-0 max-h-[300px]">
         {files.length === 0 ? (
           <div className="px-4 text-muted-foreground select-none">
             <p className="text-xs">

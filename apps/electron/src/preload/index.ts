@@ -211,6 +211,9 @@ const api: ElectronAPI = {
     return () => ipcRenderer.removeListener(IPC_CHANNELS.SESSION_FILES_CHANGED, handler)
   },
 
+  // Session changes (for reviewing edits before commit)
+  getSessionChanges: (sessionId: string) => ipcRenderer.invoke(IPC_CHANNELS.GET_SESSION_CHANGES, sessionId),
+
   // Sources
   getSources: (workspaceId: string) => ipcRenderer.invoke(IPC_CHANNELS.SOURCES_GET, workspaceId),
   createSource: (workspaceId: string, config: Partial<import('@craft-agent/shared/sources').FolderSourceConfig>) =>

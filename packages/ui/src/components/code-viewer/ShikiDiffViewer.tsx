@@ -14,6 +14,7 @@ import { FileDiff, type FileDiffMetadata, type FileDiffProps } from '@pierre/dif
 import { parseDiffFromFile, DIFFS_TAG_NAME, type FileContents } from '@pierre/diffs'
 import { cn } from '../../lib/utils'
 import { LANGUAGE_MAP } from './language-map'
+import { useShikiTheme } from '../../context/ShikiThemeContext'
 
 // Register the diffs-container custom element if not already registered
 // This is necessary because the React component renders a custom element
@@ -69,6 +70,9 @@ export function ShikiDiffViewer({
   const hasCalledReady = useRef(false)
   const [isReady, setIsReady] = useState(false)
 
+  // Get shiki theme from context (matches app's selected theme)
+  const contextShikiTheme = useShikiTheme()
+
   // Resolve language
   const resolvedLang = useMemo(() => {
     return language || getLanguageFromPath(filePath)
@@ -92,17 +96,22 @@ export function ShikiDiffViewer({
     return parseDiffFromFile(oldFile, newFile)
   }, [oldFile, newFile])
 
-  // Diff options - use pierre themes for better diff contrast
-  const options: FileDiffProps<undefined>['options'] = useMemo(() => ({
-    theme: theme === 'dark' ? 'pierre-dark' : 'pierre-light',
-    diffStyle,
-    diffIndicators: 'bars',
-    disableBackground: false,
-    lineDiffType: 'word',
-    overflow: 'scroll',
-    disableFileHeader: true, // We handle headers ourselves
-    themeType: theme === 'dark' ? 'dark' : 'light',
-  }), [theme, diffStyle])
+  // Diff options - use context theme if available, otherwise fall back to pierre themes
+  const options: FileDiffProps<undefined>['options'] = useMemo(() => {
+    // Use the app's configured shiki theme from context, or fall back to pierre themes
+    const shikiTheme = contextShikiTheme || (theme === 'dark' ? 'pierre-dark' : 'pierre-light')
+
+    return {
+      theme: shikiTheme,
+      diffStyle,
+      diffIndicators: 'bars',
+      disableBackground: false,
+      lineDiffType: 'word',
+      overflow: 'scroll',
+      disableFileHeader: true, // We handle headers ourselves
+      themeType: theme === 'dark' ? 'dark' : 'light',
+    }
+  }, [contextShikiTheme, theme, diffStyle])
 
   // Call onReady after first render
   useEffect(() => {

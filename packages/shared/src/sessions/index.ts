@@ -88,4 +88,16 @@ export {
 // Word lists (for customization if needed)
 export { ADJECTIVES, NOUNS } from './word-lists.ts';
 
+// Session changes (for Session Changes View)
+export type {
+  SessionFileChange,
+  SessionChangesResult,
+} from './changes.ts';
+
+export {
+  getSessionTouchedFiles,
+  countLineDifferences,
+  getChangeStatus,
+} from './changes.ts';
+
 
