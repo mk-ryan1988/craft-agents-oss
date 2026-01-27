@@ -1,4 +1,4 @@
-import { app, ipcMain, nativeTheme, nativeImage, dialog, shell, BrowserWindow } from 'electron'
+import { app, ipcMain, nativeTheme, nativeImage, dialog, shell, BrowserWindow, powerMonitor } from 'electron'
 import { readFile, realpath, mkdir, writeFile, unlink, rm } from 'fs/promises'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { normalize, isAbsolute, join, basename, dirname, resolve } from 'path'
@@ -1843,14 +1843,21 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
   })
 
   // Get sound file path (works in both dev and production)
-  ipcMain.handle(IPC_CHANNELS.SOUND_GET_PATH, () => {
+  // soundType: 'complete' | 'attention' | 'error'
+  ipcMain.handle(IPC_CHANNELS.SOUND_GET_PATH, (_event, soundType?: string) => {
+    const soundFile = `${soundType || 'complete'}.wav`
     if (app.isPackaged) {
       // Production: use file:// URL from resources
-      return `file://${join(process.resourcesPath, 'sounds', 'complete.wav')}`
+      return `file://${join(process.resourcesPath, 'sounds', soundFile)}`
     } else {
       // Dev: serve from Vite's public directory (localhost can't load file:// URLs)
-      return 'http://localhost:5173/sounds/complete.wav'
+      return `http://localhost:5173/sounds/${soundFile}`
     }
+  })
+
+  // Get system idle time in seconds (for sound/notification logic)
+  ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_IDLE_TIME, () => {
+    return powerMonitor.getSystemIdleTime()
   })
 
   // Update app badge count

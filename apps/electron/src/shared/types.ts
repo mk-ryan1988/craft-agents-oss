@@ -624,6 +624,9 @@ export const IPC_CHANNELS = {
   SOUND_SET_ENABLED: 'sound:setEnabled',
   SOUND_GET_PATH: 'sound:getPath',
 
+  // System idle time (for sound/notification logic)
+  SYSTEM_GET_IDLE_TIME: 'system:getIdleTime',
+
   BADGE_UPDATE: 'badge:update',
   BADGE_CLEAR: 'badge:clear',
   BADGE_SET_ICON: 'badge:setIcon',
@@ -836,7 +839,8 @@ export interface ElectronAPI {
   setNotificationsEnabled(enabled: boolean): Promise<void>
   getSoundEnabled(): Promise<boolean>
   setSoundEnabled(enabled: boolean): Promise<void>
-  getSoundPath(): Promise<string>
+  getSoundPath(soundType?: 'complete' | 'attention' | 'error'): Promise<string>
+  getSystemIdleTime(): Promise<number>
 
   updateBadgeCount(count: number): Promise<void>
   clearBadgeCount(): Promise<void>

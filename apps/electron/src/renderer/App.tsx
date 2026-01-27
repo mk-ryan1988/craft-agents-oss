@@ -20,7 +20,7 @@ import { useGlobalShortcuts } from '@/hooks/keyboard'
 import { useWindowCloseHandler } from '@/hooks/useWindowCloseHandler'
 import { useOnboarding } from '@/hooks/useOnboarding'
 import { useNotifications } from '@/hooks/useNotifications'
-import { useCompletionSound } from '@/hooks/useCompletionSound'
+import { useNotificationSounds } from '@/hooks/useNotificationSounds'
 import { useSession } from '@/hooks/useSession'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { NavigationProvider } from '@/contexts/NavigationContext'
@@ -328,8 +328,9 @@ export default function App() {
     enabled: notificationsEnabled,
   })
 
-  // Completion sound - plays when agent finishes and window is not focused
-  const { playCompletionSound } = useCompletionSound({ isWindowFocused })
+  // Notification sounds - plays when agent finishes, needs input, or errors
+  // Plays when window is not focused OR window is focused but user is idle > 3 minutes
+  const { playCompletionSound, playAttentionSound, playErrorSound } = useNotificationSounds({ isWindowFocused })
 
   // Load workspaces, sessions, model, notifications setting, and drafts when app is ready
   useEffect(() => {
@@ -421,6 +422,8 @@ export default function App() {
               next.set(sessionId, [...existingQueue, effect.request])
               return next
             })
+            // Play attention sound - agent needs user input
+            playAttentionSound()
             break
           }
           case 'permission_mode_changed': {
@@ -441,6 +444,8 @@ export default function App() {
               next.set(sessionId, [...existingQueue, effect.request])
               return next
             })
+            // Play attention sound - agent needs user input
+            playAttentionSound()
             break
           }
           case 'auto_retry': {
@@ -538,6 +543,16 @@ export default function App() {
             showSessionNotification(updatedSession, preview)
             playCompletionSound()
           }
+
+          // Play error sound on error events
+          if (event.type === 'error' || event.type === 'typed_error') {
+            playErrorSound()
+          }
+        }
+
+        // Play attention sound for events that need user input (outside handoff check)
+        if (event.type === 'plan_submitted' || event.type === 'auth_request') {
+          playAttentionSound()
         }
 
         return
@@ -569,7 +584,7 @@ export default function App() {
     })
 
     return cleanup
-  }, [processAgentEvent, windowWorkspaceId, store, updateSessionDirect, showSessionNotification])
+  }, [processAgentEvent, windowWorkspaceId, store, updateSessionDirect, showSessionNotification, playCompletionSound, playAttentionSound, playErrorSound])
 
   // Listen for menu bar events
   useEffect(() => {

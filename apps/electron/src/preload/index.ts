@@ -342,8 +342,10 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.SOUND_GET_ENABLED) as Promise<boolean>,
   setSoundEnabled: (enabled: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.SOUND_SET_ENABLED, enabled),
-  getSoundPath: () =>
-    ipcRenderer.invoke(IPC_CHANNELS.SOUND_GET_PATH) as Promise<string>,
+  getSoundPath: (soundType?: 'complete' | 'attention' | 'error') =>
+    ipcRenderer.invoke(IPC_CHANNELS.SOUND_GET_PATH, soundType) as Promise<string>,
+  getSystemIdleTime: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_GET_IDLE_TIME) as Promise<number>,
   updateBadgeCount: (count: number) =>
     ipcRenderer.invoke(IPC_CHANNELS.BADGE_UPDATE, count),
   clearBadgeCount: () =>
