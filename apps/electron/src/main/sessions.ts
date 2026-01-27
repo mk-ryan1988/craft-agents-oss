@@ -30,6 +30,7 @@ import {
   clearPendingPlanExecution as clearStoredPendingPlanExecution,
   getPendingPlanExecution as getStoredPendingPlanExecution,
   getSessionAttachmentsPath,
+  getSessionPlansPath,
   getSessionPath as getSessionStoragePath,
   sessionPersistenceQueue,
   type StoredSession,
@@ -2007,8 +2008,16 @@ export class SessionManager {
       isAbsolute(filePath) ? filePath : join(workingDir, filePath)
     )
 
+    // Filter out files in the session's plans folder (plans are not code changes)
+    const plansPath = getSessionPlansPath(managed.workspace.rootPath, sessionId)
+    const filesToDiff = absoluteFiles.filter(filePath => !filePath.startsWith(plansPath))
+
+    if (filesToDiff.length === 0) {
+      return { files: [], isGitRepo: inGitRepo, workingDirectory: workingDir }
+    }
+
     // Compute diffs for each file (in parallel)
-    const diffPromises = absoluteFiles.map(async (filePath) => {
+    const diffPromises = filesToDiff.map(async (filePath) => {
       // Skip binary files
       if (isBinaryFile(filePath)) {
         return {
