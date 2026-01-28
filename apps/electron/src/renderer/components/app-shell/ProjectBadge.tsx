@@ -7,7 +7,7 @@
 
 import * as React from 'react'
 import { useState } from 'react'
-import { FolderGit2, ChevronDown, Check, Plus } from 'lucide-react'
+import { FolderGit2, Check, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
@@ -65,7 +65,6 @@ export function ProjectBadge({
         >
           <FolderGit2 className="h-3 w-3 shrink-0" />
           <span className="truncate max-w-[120px]">{displayName}</span>
-          <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
         </button>
       </DropdownMenuTrigger>
       <StyledDropdownMenuContent align="start" sideOffset={4}>
