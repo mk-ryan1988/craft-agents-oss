@@ -4,7 +4,7 @@
  * Platform-agnostic component for displaying code with:
  * - Line numbers
  * - Syntax highlighting via Shiki
- * - Light/dark theme support
+ * - Light/dark theme support (auto-detected from DOM or explicit)
  * - Scrollable with custom scrollbar styling
  */
 
@@ -13,6 +13,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { codeToHtml, bundledLanguages, type BundledLanguage } from 'shiki'
 import { cn } from '../../lib/utils'
 import { LANGUAGE_MAP } from './language-map'
+import { useShikiTheme } from '../../context/ShikiThemeContext'
 
 export interface ShikiCodeViewerProps {
   /** The code content to display */
@@ -67,14 +68,17 @@ export function ShikiCodeViewer({
   language,
   filePath,
   startLine = 1,
-  theme = 'light',
-  shikiTheme,
+  theme: themeProp,
+  shikiTheme: shikiThemeProp,
   onReady,
   className,
 }: ShikiCodeViewerProps) {
   const [highlighted, setHighlighted] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const hasCalledReady = useRef(false)
+
+  // Get shiki theme from context (handles dark-only themes, scenic mode, etc.)
+  const contextShikiTheme = useShikiTheme()
 
   // Resolve language from props or file path
   const resolvedLang = useMemo(() => {
@@ -91,8 +95,22 @@ export function ShikiCodeViewer({
     let cancelled = false
 
     async function highlight() {
-      // Use provided shikiTheme or fall back to github theme based on mode
-      const resolvedShikiTheme = shikiTheme || (theme === 'dark' ? 'github-dark' : 'github-light')
+      // Theme priority:
+      // 1. Explicit shikiTheme prop
+      // 2. Context theme (from ShikiThemeProvider)
+      // 3. Explicit theme prop ('light'/'dark') -> github theme
+      // 4. DOM detection fallback
+      let resolvedShikiTheme: string
+      if (shikiThemeProp) {
+        resolvedShikiTheme = shikiThemeProp
+      } else if (contextShikiTheme) {
+        resolvedShikiTheme = contextShikiTheme
+      } else if (themeProp) {
+        resolvedShikiTheme = themeProp === 'dark' ? 'github-dark' : 'github-light'
+      } else {
+        const isDark = document.documentElement.classList.contains('dark')
+        resolvedShikiTheme = isDark ? 'github-dark' : 'github-light'
+      }
       const lang = isValidLanguage(resolvedLang) ? resolvedLang : 'text'
 
       try {
@@ -130,33 +148,22 @@ export function ShikiCodeViewer({
     return () => {
       cancelled = true
     }
-  }, [code, resolvedLang, theme, shikiTheme, onReady])
-
-  // Theme-aware colors
-  const backgroundColor = theme === 'dark' ? '#1e1e1e' : '#ffffff'
-  const lineNumberColor = theme === 'dark' ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)'
-  const borderColor = theme === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)'
+  }, [code, resolvedLang, themeProp, shikiThemeProp, contextShikiTheme, onReady])
 
   return (
     <div
-      className={cn('h-full w-full overflow-auto', className)}
-      style={{ backgroundColor }}
+      className={cn('h-full w-full overflow-auto bg-background text-foreground', className)}
     >
       <div className="min-h-full flex">
         {/* Line numbers gutter */}
         <div
-          className="sticky left-0 shrink-0 select-none text-right pr-4 pt-4 pb-4"
-          style={{
-            backgroundColor,
-            borderRight: `1px solid ${borderColor}`,
-            minWidth: '60px',
-          }}
+          className="sticky left-0 shrink-0 select-none text-right pr-4 pt-4 pb-4 bg-background border-r border-foreground/10"
+          style={{ minWidth: '60px' }}
         >
           {lines.map((_, index) => (
             <div
               key={index}
-              className="font-mono text-[13px] leading-[1.6] px-2"
-              style={{ color: lineNumberColor }}
+              className="font-mono text-[13px] leading-[1.6] px-2 text-foreground/30"
             >
               {startLine + index}
             </div>

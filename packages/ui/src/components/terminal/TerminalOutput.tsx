@@ -42,21 +42,16 @@ export function TerminalOutput({
   exitCode,
   toolType = 'bash',
   description,
-  theme = 'light',
+  theme: themeProp, // Deprecated: theme is now auto-detected from DOM
   className,
 }: TerminalOutputProps) {
   const [copied, setCopied] = useState<'command' | 'output' | null>(null)
 
-  const isDark = theme === 'dark'
+  // Detect dark mode from DOM if no theme prop provided
+  const isDark = themeProp ? themeProp === 'dark' : document.documentElement.classList.contains('dark')
 
-  // Theme-aware colors
-  const bgColor = isDark ? '#1e1e1e' : '#ffffff'
-  const textColor = isDark ? '#e4e4e4' : '#1a1a1a'
-  const mutedColor = isDark ? '#888888' : '#666666'
+  // Semantic colors for terminal output - these stay consistent
   const matchColor = '#22c55e' // Green for grep matches
-  const cmdColor = isDark ? '#60a5fa' : '#2563eb' // Blue for command
-  const codeBg = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)'
-  const outputBg = isDark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.03)'
 
   // Copy to clipboard (strip ANSI codes for clean text)
   const copyToClipboard = useCallback(async (text: string, type: 'command' | 'output') => {
@@ -89,52 +84,45 @@ export function TerminalOutput({
 
   return (
     <div
-      className={cn('h-full w-full overflow-auto p-4 font-mono text-sm', className)}
-      style={{ fontFamily: '"JetBrains Mono", monospace', backgroundColor: bgColor, color: textColor }}
+      className={cn('h-full w-full overflow-auto p-4 font-mono text-sm bg-background text-foreground', className)}
+      style={{ fontFamily: '"JetBrains Mono", monospace' }}
     >
       {/* Command section */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2 text-xs" style={{ color: mutedColor }}>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Terminal className="w-3 h-3" />
             <span>Command</span>
           </div>
           <button
             onClick={() => copyToClipboard(command, 'command')}
-            className={cn(
-              'p-1 rounded transition-colors',
-              isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'
-            )}
+            className="p-1 rounded transition-colors hover:bg-foreground/10"
             title={copied === 'command' ? 'Copied!' : 'Copy command'}
           >
             {copied === 'command' ? (
-              <Check className="h-3.5 w-3.5 text-green-500" />
+              <Check className="h-3.5 w-3.5 text-success" />
             ) : (
-              <Copy className="h-3.5 w-3.5" style={{ color: mutedColor }} />
+              <Copy className="h-3.5 w-3.5 text-muted-foreground" />
             )}
           </button>
         </div>
-        <div
-          className="p-3 rounded-lg overflow-x-auto"
-          style={{ backgroundColor: codeBg }}
-        >
-          <code style={{ color: cmdColor }}>{command}</code>
+        <div className="p-3 rounded-lg overflow-x-auto bg-foreground/5">
+          <code className="text-accent">{command}</code>
         </div>
       </div>
 
       {/* Output section */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2 text-xs" style={{ color: mutedColor }}>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Terminal className="w-3 h-3" />
             <span>Output</span>
             {exitCode !== undefined && (
               <span
-                className="px-1.5 py-0.5 rounded text-[10px]"
-                style={{
-                  backgroundColor: exitCode === 0 ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-                  color: exitCode === 0 ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
-                }}
+                className={cn(
+                  'px-1.5 py-0.5 rounded text-[10px]',
+                  exitCode === 0 ? 'bg-success/20 text-success' : 'bg-destructive/20 text-destructive'
+                )}
               >
                 exit {exitCode}
               </span>
@@ -142,26 +130,19 @@ export function TerminalOutput({
           </div>
           <button
             onClick={() => copyToClipboard(output, 'output')}
-            className={cn(
-              'p-1 rounded transition-colors',
-              isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'
-            )}
+            className="p-1 rounded transition-colors hover:bg-foreground/10"
             title={copied === 'output' ? 'Copied!' : 'Copy output'}
           >
             {copied === 'output' ? (
-              <Check className="h-3.5 w-3.5 text-green-500" />
+              <Check className="h-3.5 w-3.5 text-success" />
             ) : (
-              <Copy className="h-3.5 w-3.5" style={{ color: mutedColor }} />
+              <Copy className="h-3.5 w-3.5 text-muted-foreground" />
             )}
           </button>
         </div>
         <pre
-          className="p-3 rounded-lg overflow-auto"
-          style={{
-            backgroundColor: outputBg,
-            color: textColor,
-            maxHeight: 'calc(100vh - 200px)',
-          }}
+          className="p-3 rounded-lg overflow-auto bg-foreground/5"
+          style={{ maxHeight: 'calc(100vh - 200px)' }}
         >
           {/* Grep output with line number highlighting */}
           {isGrepOutput && grepLines.length > 0 ? (
@@ -169,30 +150,29 @@ export function TerminalOutput({
               {grepLines.map((line, i) => (
                 <div
                   key={i}
-                  className="flex"
-                  style={{
-                    backgroundColor: line.isMatch ? 'rgba(34, 197, 94, 0.08)' : undefined,
-                  }}
+                  className={cn('flex', line.isMatch && 'bg-success/10')}
                 >
                   {/* Line number */}
                   {line.lineNum && (
                     <span
-                      className="select-none pr-3 text-right shrink-0"
-                      style={{
-                        color: line.isMatch ? matchColor : mutedColor,
-                        minWidth: '3rem',
-                      }}
+                      className={cn(
+                        'select-none pr-3 text-right shrink-0',
+                        line.isMatch ? 'text-success' : 'text-muted-foreground'
+                      )}
+                      style={{ minWidth: '3rem' }}
                     >
                       {line.lineNum}
-                      <span style={{ color: line.isMatch ? matchColor : (isDark ? '#444444' : '#cccccc') }}>
+                      <span className={line.isMatch ? 'text-success' : 'text-foreground/20'}>
                         {line.isMatch ? ':' : '-'}
                       </span>
                     </span>
                   )}
                   {/* Content */}
                   <span
-                    className="whitespace-pre-wrap break-words"
-                    style={{ color: line.isMatch ? textColor : mutedColor }}
+                    className={cn(
+                      'whitespace-pre-wrap break-words',
+                      line.isMatch ? 'text-foreground' : 'text-muted-foreground'
+                    )}
                   >
                     {line.content}
                   </span>
@@ -219,7 +199,7 @@ export function TerminalOutput({
               ))}
             </div>
           ) : (
-            <span style={{ color: mutedColor }}>(no output)</span>
+            <span className="text-muted-foreground">(no output)</span>
           )}
         </pre>
       </div>

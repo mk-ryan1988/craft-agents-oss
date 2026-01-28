@@ -51,25 +51,20 @@ export function TerminalPreviewOverlay({
   exitCode,
   toolType = 'bash',
   description,
-  theme = 'light',
+  theme: _theme, // Deprecated: theme is now auto-detected from DOM
 }: TerminalPreviewOverlayProps) {
-  const backgroundColor = theme === 'dark' ? '#1e1e1e' : '#ffffff'
-  const textColor = theme === 'dark' ? '#e4e4e4' : '#1a1a1a'
   const config = getToolConfig(toolType)
 
   return (
     <PreviewOverlay
       isOpen={isOpen}
       onClose={onClose}
-      theme={theme}
       badge={{
         icon: config.icon,
         label: config.label,
         variant: config.variant,
       }}
       title={description || ''}
-      backgroundColor={backgroundColor}
-      textColor={textColor}
     >
       <TerminalOutput
         command={command}
@@ -77,7 +72,6 @@ export function TerminalPreviewOverlay({
         exitCode={exitCode}
         toolType={toolType}
         description={description}
-        theme={theme}
       />
     </PreviewOverlay>
   )

@@ -47,12 +47,10 @@ export function CodePreviewOverlay({
   startLine = 1,
   totalLines,
   numLines,
-  theme = 'light',
+  theme: _theme, // Deprecated: theme is now auto-detected from DOM
   error,
   onOpenFile,
 }: CodePreviewOverlayProps) {
-  const backgroundColor = theme === 'dark' ? '#1e1e1e' : '#ffffff'
-
   // Build subtitle with line info
   const subtitle =
     startLine !== undefined && totalLines !== undefined && numLines !== undefined
@@ -63,7 +61,6 @@ export function CodePreviewOverlay({
     <PreviewOverlay
       isOpen={isOpen}
       onClose={onClose}
-      theme={theme}
       badge={{
         icon: mode === 'write' ? PenLine : BookOpen,
         label: mode === 'write' ? 'Write' : 'Read',
@@ -73,15 +70,13 @@ export function CodePreviewOverlay({
       onTitleClick={onOpenFile ? () => onOpenFile(filePath) : undefined}
       subtitle={subtitle}
       error={error ? { label: mode === 'write' ? 'Write Failed' : 'Read Failed', message: error } : undefined}
-      backgroundColor={backgroundColor}
     >
-      <div className="h-full" style={{ backgroundColor }}>
+      <div className="h-full bg-background">
         <ShikiCodeViewer
           code={content}
           filePath={filePath}
           language={language}
           startLine={startLine}
-          theme={theme}
         />
       </div>
     </PreviewOverlay>
