@@ -23,6 +23,7 @@ import {
   isSourcesNavigation,
   isSettingsNavigation,
   isSkillsNavigation,
+  isProjectsNavigation,
 } from '@/contexts/NavigationContext'
 import { AppSettingsPage, WorkspaceSettingsPage, PermissionsSettingsPage, PreferencesPage, ShortcutsPage, SourceInfoPage, ChatPage } from '@/pages'
 import SkillInfoPage from '@/pages/SkillInfoPage'
@@ -124,6 +125,25 @@ export function MainContentPanel({
       <Panel variant="grow" className={className}>
         <div className="flex items-center justify-center h-full text-muted-foreground">
           <p className="text-sm">No skills configured</p>
+        </div>
+      </Panel>
+    )
+  }
+
+  // Projects navigator - show chat or empty state (sessions filtered by project)
+  if (isProjectsNavigation(navState)) {
+    if (navState.details) {
+      return wrapWithStoplight(
+        <Panel variant="grow" className={className}>
+          <ChatPage sessionId={navState.details.sessionId} />
+        </Panel>
+      )
+    }
+    // No session selected - empty state
+    return wrapWithStoplight(
+      <Panel variant="grow" className={className}>
+        <div className="flex items-center justify-center h-full text-muted-foreground">
+          <p className="text-sm">No project conversations yet</p>
         </div>
       </Panel>
     )

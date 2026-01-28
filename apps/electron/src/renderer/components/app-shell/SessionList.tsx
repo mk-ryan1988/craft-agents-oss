@@ -38,7 +38,7 @@ import { Input } from "@/components/ui/input"
 import { RenameDialog } from "@/components/ui/rename-dialog"
 import { useSession } from "@/hooks/useSession"
 import { useFocusZone, useRovingTabIndex } from "@/hooks/keyboard"
-import { useNavigation, useNavigationState, routes, isChatsNavigation } from "@/contexts/NavigationContext"
+import { useNavigation, useNavigationState, routes, isChatsNavigation, isProjectsNavigation } from "@/contexts/NavigationContext"
 import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import type { SessionMeta } from "@/atoms/sessions"
@@ -562,6 +562,7 @@ export function SessionList({
 
   // Get current filter from navigation state (for preserving context in tab routes)
   const currentFilter = isChatsNavigation(navState) ? navState.filter : undefined
+  const projectFilter = isProjectsNavigation(navState) ? navState.filter : undefined
 
   const [renameDialogOpen, setRenameDialogOpen] = useState(false)
   const [renameSessionId, setRenameSessionId] = useState<string | null>(null)
@@ -657,6 +658,16 @@ export function SessionList({
   // Handle session selection (immediate on arrow navigation)
   const handleActiveChange = useCallback((item: SessionMeta) => {
     // Navigate using view routes to preserve filter context
+    // Handle projects navigation
+    if (projectFilter) {
+      if (projectFilter.kind === 'project') {
+        navigate(routes.view.projects(projectFilter.projectId, item.id))
+      } else {
+        navigate(routes.view.projects(undefined, item.id))
+      }
+      return
+    }
+    // Handle chats navigation
     if (!currentFilter || currentFilter.kind === 'allChats') {
       navigate(routes.view.allChats(item.id))
     } else if (currentFilter.kind === 'flagged') {
@@ -664,7 +675,7 @@ export function SessionList({
     } else if (currentFilter.kind === 'state') {
       navigate(routes.view.state(currentFilter.stateId, item.id))
     }
-  }, [navigate, currentFilter])
+  }, [navigate, currentFilter, projectFilter])
 
   // Handle Enter to focus chat input
   const handleEnter = useCallback(() => {
@@ -866,7 +877,15 @@ export function SessionList({
                     onDelete={handleDeleteWithToast}
                     onSelect={() => {
                       // Navigate to session with filter context (updates URL and selection)
-                      if (!currentFilter || currentFilter.kind === 'allChats') {
+                      // Handle projects navigation
+                      if (projectFilter) {
+                        if (projectFilter.kind === 'project') {
+                          navigate(routes.view.projects(projectFilter.projectId, item.id))
+                        } else {
+                          navigate(routes.view.projects(undefined, item.id))
+                        }
+                      // Handle chats navigation
+                      } else if (!currentFilter || currentFilter.kind === 'allChats') {
                         navigate(routes.view.allChats(item.id))
                       } else if (currentFilter.kind === 'flagged') {
                         navigate(routes.view.flagged(item.id))

@@ -702,13 +702,19 @@ function AppShellContent({
   const filteredSessionMetas = useMemo(() => {
     // Handle project filter (projects navigator)
     if (projectFilter) {
+      let result: SessionMeta[]
       if (projectFilter.kind === 'allProjects') {
         // Show all sessions that belong to any project
-        return workspaceSessionMetas.filter(s => s.projectId)
+        result = workspaceSessionMetas.filter(s => s.projectId)
       } else {
         // Show sessions for specific project
-        return workspaceSessionMetas.filter(s => s.projectId === projectFilter.projectId)
+        result = workspaceSessionMetas.filter(s => s.projectId === projectFilter.projectId)
       }
+      // Apply secondary filter by todo states if any are selected
+      if (listFilter.size > 0) {
+        result = result.filter(s => listFilter.has((s.todoState || 'todo') as TodoStateId))
+      }
+      return result
     }
 
     // Handle chat filter (chats navigator)
@@ -1550,8 +1556,8 @@ function AppShellContent({
               compensateForStoplight={!isSidebarVisible}
               actions={
                 <>
-                  {/* Filter dropdown - allows filtering by todo states (only in All Chats view) */}
-                  {chatFilter?.kind === 'allChats' && (
+                  {/* Filter dropdown - allows filtering by todo states (All Chats and Projects views) */}
+                  {(chatFilter?.kind === 'allChats' || isProjectsNavigation(navState)) && (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <HeaderIconButton
