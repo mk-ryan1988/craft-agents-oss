@@ -136,11 +136,19 @@ export const routes = {
         ? `skills/skill/${skillSlug}` as const
         : 'skills' as const,
 
-    /** Projects view (projects navigator) */
-    projects: (projectSlug?: string) =>
-      projectSlug
-        ? `projects/project/${projectSlug}` as const
-        : 'projects' as const,
+    /** Projects view (projects navigator) - shows sessions filtered by project */
+    projects: (projectId?: string, sessionId?: string) => {
+      if (projectId && sessionId) {
+        return `projects/project/${projectId}/session/${sessionId}` as const
+      }
+      if (projectId) {
+        return `projects/project/${projectId}` as const
+      }
+      if (sessionId) {
+        return `projects/session/${sessionId}` as const
+      }
+      return 'projects' as const
+    },
 
     /** Settings view (settings navigator) */
     settings: (subpage?: 'app' | 'workspace' | 'permissions' | 'shortcuts' | 'preferences') =>

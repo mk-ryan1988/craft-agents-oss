@@ -92,6 +92,7 @@ import {
   isProjectsNavigation,
   type NavigationState,
   type ChatFilter,
+  type ProjectFilter,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
 import { SourcesListPanel } from "./SourcesListPanel"
@@ -243,6 +244,9 @@ function AppShellContent({
 
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
+
+  // Derive project filter from navigation state (only when in projects navigator)
+  const projectFilter = isProjectsNavigation(navState) ? navState.filter : null
 
   // Session list filter: empty set shows all, otherwise shows only sessions with selected states
   const [listFilter, setListFilter] = React.useState<Set<TodoStateId>>(() => {
@@ -694,10 +698,22 @@ function AppShellContent({
     return counts
   }, [sources])
 
-  // Filter session metadata based on sidebar mode and chat filter
+  // Filter session metadata based on sidebar mode and chat/project filter
   const filteredSessionMetas = useMemo(() => {
-    // When in sources mode, return empty (no sessions to show)
+    // Handle project filter (projects navigator)
+    if (projectFilter) {
+      if (projectFilter.kind === 'allProjects') {
+        // Show all sessions that belong to any project
+        return workspaceSessionMetas.filter(s => s.projectId)
+      } else {
+        // Show sessions for specific project
+        return workspaceSessionMetas.filter(s => s.projectId === projectFilter.projectId)
+      }
+    }
+
+    // Handle chat filter (chats navigator)
     if (!chatFilter) {
+      // No filter - return empty (sources/skills/settings mode)
       return []
     }
 
@@ -725,18 +741,23 @@ function AppShellContent({
     }
 
     return result
-  }, [workspaceSessionMetas, chatFilter, listFilter])
+  }, [workspaceSessionMetas, chatFilter, projectFilter, listFilter])
 
-  // Compute session counts per project
+  // Compute session counts per project (from all workspace sessions, not filtered)
   const projectSessionCounts = React.useMemo(() => {
     const counts = new Map<string, number>()
-    filteredSessionMetas.forEach((meta) => {
+    workspaceSessionMetas.forEach((meta) => {
       if (meta.projectId) {
         counts.set(meta.projectId, (counts.get(meta.projectId) || 0) + 1)
       }
     })
     return counts
-  }, [filteredSessionMetas])
+  }, [workspaceSessionMetas])
+
+  // Total count of sessions that belong to any project
+  const allProjectSessionsCount = React.useMemo(() => {
+    return workspaceSessionMetas.filter(s => s.projectId).length
+  }, [workspaceSessionMetas])
 
   // Handle selecting a project from the list
   const handleProjectSelect = React.useCallback((project: LoadedProject | null) => {
@@ -906,10 +927,15 @@ function AppShellContent({
     navigate(routes.view.skills())
   }, [])
 
-  // Handler for projects view
+  // Handler for projects view (all project sessions)
   const handleProjectsClick = useCallback(() => {
     navigate(routes.view.projects())
-  }, [])
+  }, [navigate])
+
+  // Handler for specific project click
+  const handleProjectClick = useCallback((projectId: string) => {
+    navigate(routes.view.projects(projectId))
+  }, [navigate])
 
   // Handler for settings view
   const handleSettingsClick = useCallback((subpage: SettingsSubpage = 'app') => {
@@ -1303,15 +1329,29 @@ function AppShellContent({
                     {
                       id: "nav:projects",
                       title: "Projects",
-                      label: String(projects.length),
+                      label: String(allProjectSessionsCount),
                       icon: FolderGit2,
-                      variant: isProjectsNavigation(navState) ? "default" : "ghost",
+                      // Highlight when in projects navigator and showing all projects
+                      variant: (isProjectsNavigation(navState) && projectFilter?.kind === 'allProjects') ? "default" : "ghost",
                       onClick: handleProjectsClick,
+                      // Make expandable with project items
+                      expandable: projects.length > 0,
+                      expanded: isExpanded('nav:projects'),
+                      onToggle: () => toggleExpanded('nav:projects'),
                       // Context menu: Add Project
                       contextMenu: {
                         type: 'projects',
                         onAddProject: openAddProject,
                       },
+                      // Project items as children
+                      items: projects.map(project => ({
+                        id: `nav:project:${project.config.id}`,
+                        title: project.config.name,
+                        label: String(projectSessionCounts.get(project.config.id) || 0),
+                        icon: FolderGit2,
+                        variant: (projectFilter?.kind === 'project' && projectFilter.projectId === project.config.id) ? "default" : "ghost",
+                        onClick: () => handleProjectClick(project.config.id),
+                      })),
                     },
                     {
                       id: "nav:sources",
@@ -1670,15 +1710,41 @@ function AppShellContent({
               />
             )}
             {isProjectsNavigation(navState) && activeWorkspaceId && (
-              /* Projects List */
-              <ProjectsListPanel
+              /* Project Sessions List */
+              <SessionList
+                key={projectFilter?.kind === 'project' ? projectFilter.projectId : 'allProjects'}
+                items={filteredSessionMetas}
+                onDelete={handleDeleteSession}
+                onFlag={onFlagSession}
+                onUnflag={onUnflagSession}
+                onMarkUnread={onMarkSessionUnread}
+                onTodoStateChange={onTodoStateChange}
+                onRename={onRenameSession}
+                onFocusChatInput={focusChatInput}
+                onSessionSelect={(selectedMeta) => {
+                  // Navigate to the session via central routing (with project filter context)
+                  if (projectFilter?.kind === 'project') {
+                    navigate(routes.view.projects(projectFilter.projectId, selectedMeta.id))
+                  } else {
+                    navigate(routes.view.projects(undefined, selectedMeta.id))
+                  }
+                }}
+                onOpenInNewWindow={(selectedMeta) => {
+                  if (activeWorkspaceId) {
+                    window.electronAPI.openSessionInNewWindow(activeWorkspaceId, selectedMeta.id)
+                  }
+                }}
+                sessionOptions={sessionOptions}
+                searchActive={searchActive}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                onSearchClose={() => {
+                  setSearchActive(false)
+                  setSearchQuery('')
+                }}
+                todoStates={todoStates}
                 projects={projects}
-                selectedProjectId={isProjectsNavigation(navState) && navState.details ? navState.details.projectSlug : null}
-                sessionCountByProject={projectSessionCounts}
-                onProjectSelect={handleProjectSelect}
-                onProjectRename={handleProjectRename}
-                onProjectDelete={handleProjectDelete}
-                onOpenProjectInFinder={handleOpenProjectInFinder}
+                onProjectChange={handleSessionProjectChange}
               />
             )}
             {isSettingsNavigation(navState) && (

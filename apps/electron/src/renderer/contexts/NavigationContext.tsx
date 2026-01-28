@@ -49,6 +49,7 @@ import type {
   NavigationState,
   ChatFilter,
   SourceFilter,
+  ProjectFilter,
   RightSidebarPanel,
   ContentBadge,
 } from '../../shared/types'
@@ -70,7 +71,7 @@ export { routes }
 export type { Route }
 
 // Re-export navigation state types for consumers
-export type { NavigationState, ChatFilter }
+export type { NavigationState, ChatFilter, ProjectFilter }
 export { isChatsNavigation, isSourcesNavigation, isSettingsNavigation, isSkillsNavigation, isProjectsNavigation }
 
 interface NavigationContextValue {
@@ -400,20 +401,9 @@ export function NavigationProvider({
         }
       }
 
-      // For projects: auto-select first project if no details provided
-      if (isProjectsNavigation(newState) && !newState.details) {
-        const firstProjectSlug = getFirstProjectSlug()
-        if (firstProjectSlug) {
-          const stateWithSelection: NavigationState = {
-            ...newState,
-            details: { type: 'project', projectSlug: firstProjectSlug },
-          }
-          setNavigationState(stateWithSelection)
-          return stateWithSelection
-        } else {
-          setNavigationState(newState)
-          return newState
-        }
+      // For projects with explicit session: update session selection
+      if (isProjectsNavigation(newState) && newState.details) {
+        setSession({ selected: newState.details.sessionId })
       }
 
       // For chats with explicit session: update session selection
@@ -528,7 +518,8 @@ export function NavigationProvider({
     }
 
     if (isProjectsNavigation(navState) && navState.details) {
-      return projects.some(p => p.config.slug === navState.details!.projectSlug)
+      // Details is now a session, not a project
+      return sessionMetaMap.has(navState.details.sessionId)
     }
 
     return true // Routes without details are always valid

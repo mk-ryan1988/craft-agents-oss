@@ -13,6 +13,7 @@ import type {
   NavigationState,
   ChatFilter,
   SourceFilter,
+  ProjectFilter,
   SettingsSubpage,
   RightSidebarPanel,
 } from './types'
@@ -43,6 +44,8 @@ export interface ParsedCompoundRoute {
   chatFilter?: ChatFilter
   /** Source filter (only for sources navigator) */
   sourceFilter?: SourceFilter
+  /** Project filter (only for projects navigator) */
+  projectFilter?: ProjectFilter
   /** Details page info (null for empty state) */
   details: {
     type: string
@@ -155,17 +158,39 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
     return null
   }
 
-  // Projects navigator
+  // Projects navigator - shows sessions filtered by project
   if (first === 'projects') {
+    // projects - all project sessions
     if (segments.length === 1) {
-      return { navigator: 'projects', details: null }
+      return { navigator: 'projects', projectFilter: { kind: 'allProjects' }, details: null }
     }
 
-    // projects/project/{projectSlug}
-    if (segments[1] === 'project' && segments[2]) {
+    // projects/session/{sessionId} - all projects, specific session selected
+    if (segments[1] === 'session' && segments[2]) {
       return {
         navigator: 'projects',
-        details: { type: 'project', id: segments[2] },
+        projectFilter: { kind: 'allProjects' },
+        details: { type: 'session', id: segments[2] },
+      }
+    }
+
+    // projects/project/{projectId} - specific project, no session
+    if (segments[1] === 'project' && segments[2]) {
+      const projectId = segments[2]
+
+      // projects/project/{projectId}/session/{sessionId}
+      if (segments[3] === 'session' && segments[4]) {
+        return {
+          navigator: 'projects',
+          projectFilter: { kind: 'project', projectId },
+          details: { type: 'session', id: segments[4] },
+        }
+      }
+
+      return {
+        navigator: 'projects',
+        projectFilter: { kind: 'project', projectId },
+        details: null,
       }
     }
 
@@ -240,8 +265,16 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
   }
 
   if (parsed.navigator === 'projects') {
-    if (!parsed.details) return 'projects'
-    return `projects/project/${parsed.details.id}`
+    // Build base from filter
+    let base = 'projects'
+    if (parsed.projectFilter?.kind === 'project') {
+      base = `projects/project/${parsed.projectFilter.projectId}`
+    }
+    // Add session details if selected
+    if (parsed.details) {
+      return `${base}/session/${parsed.details.id}`
+    }
+    return base
   }
 
   // Chats navigator
@@ -473,14 +506,20 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     }
   }
 
-  // Projects
+  // Projects - now shows sessions filtered by project
   if (compound.navigator === 'projects') {
-    if (!compound.details) {
-      return { navigator: 'projects', details: null }
+    const filter = compound.projectFilter || { kind: 'allProjects' as const }
+    if (compound.details) {
+      return {
+        navigator: 'projects',
+        filter,
+        details: { type: 'session', sessionId: compound.details.id },
+      }
     }
     return {
       navigator: 'projects',
-      details: { type: 'project', projectSlug: compound.details.id },
+      filter,
+      details: null,
     }
   }
 
@@ -547,18 +586,16 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
       }
       return { navigator: 'skills', details: null }
     case 'projects':
-      return { navigator: 'projects', details: null }
+      return { navigator: 'projects', filter: { kind: 'allProjects' }, details: null }
     case 'project-info':
       if (parsed.id) {
         return {
           navigator: 'projects',
-          details: {
-            type: 'project',
-            projectSlug: parsed.id,
-          },
+          filter: { kind: 'project', projectId: parsed.id },
+          details: null,
         }
       }
-      return { navigator: 'projects', details: null }
+      return { navigator: 'projects', filter: { kind: 'allProjects' }, details: null }
     case 'chat':
       if (parsed.id) {
         // Reconstruct filter from params
@@ -630,10 +667,16 @@ export function buildRouteFromNavigationState(state: NavigationState): string {
   }
 
   if (state.navigator === 'projects') {
-    if (state.details) {
-      return `projects/project/${state.details.projectSlug}`
+    // Build base from filter
+    let base = 'projects'
+    if (state.filter.kind === 'project') {
+      base = `projects/project/${state.filter.projectId}`
     }
-    return 'projects'
+    // Add session details if selected
+    if (state.details) {
+      return `${base}/session/${state.details.sessionId}`
+    }
+    return base
   }
 
   // Chats

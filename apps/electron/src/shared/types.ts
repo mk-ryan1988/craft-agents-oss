@@ -1037,12 +1037,21 @@ export interface SkillsNavigationState {
 }
 
 /**
- * Projects navigation state - shows ProjectsListPanel in navigator
+ * Project filter for sessions list
+ */
+export type ProjectFilter =
+  | { kind: 'allProjects' }  // All sessions that belong to any project
+  | { kind: 'project'; projectId: string }  // Sessions for a specific project
+
+/**
+ * Projects navigation state - shows sessions filtered by project in navigator
  */
 export interface ProjectsNavigationState {
   navigator: 'projects'
-  /** Selected project details, or null for empty state */
-  details: { type: 'project'; projectSlug: string } | null
+  /** Filter for which project sessions to show */
+  filter: ProjectFilter
+  /** Selected session, or null for empty state */
+  details: { type: 'session'; sessionId: string } | null
   /** Optional right sidebar panel state */
   rightSidebar?: RightSidebarPanel
 }
@@ -1131,10 +1140,16 @@ export const getNavigationStateKey = (state: NavigationState): string => {
     return `settings:${state.subpage}`
   }
   if (state.navigator === 'projects') {
-    if (state.details) {
-      return `projects/project/${state.details.projectSlug}`
+    // Build base from filter
+    let base = 'projects'
+    if (state.filter.kind === 'project') {
+      base = `projects/project/${state.filter.projectId}`
     }
-    return 'projects'
+    // Add session details if selected
+    if (state.details) {
+      return `${base}/session/${state.details.sessionId}`
+    }
+    return base
   }
   // Chats
   const f = state.filter
