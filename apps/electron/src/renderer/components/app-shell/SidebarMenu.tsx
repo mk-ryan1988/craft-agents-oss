@@ -25,7 +25,7 @@ import {
 import { useMenuComponents } from '@/components/ui/menu-context'
 import { getDocUrl, type DocFeature } from '@craft-agent/shared/docs/doc-links'
 
-export type SidebarMenuType = 'allChats' | 'flagged' | 'status' | 'sources' | 'skills' | 'newChat'
+export type SidebarMenuType = 'allChats' | 'flagged' | 'status' | 'sources' | 'skills' | 'projects' | 'newChat'
 
 export interface SidebarMenuProps {
   /** Type of sidebar item (determines available menu items) */
@@ -38,6 +38,8 @@ export interface SidebarMenuProps {
   onAddSource?: () => void
   /** Handler for "Add Skill" action - only for skills type */
   onAddSkill?: () => void
+  /** Handler for "Add Project" action - only for projects type */
+  onAddProject?: () => void
   /** Source type filter for "Learn More" link - determines which docs page to open */
   sourceType?: 'api' | 'mcp' | 'local'
 }
@@ -52,6 +54,7 @@ export function SidebarMenu({
   onConfigureStatuses,
   onAddSource,
   onAddSkill,
+  onAddProject,
   sourceType,
 }: SidebarMenuProps) {
   // Get menu components from context (works with both DropdownMenu and ContextMenu)
@@ -116,6 +119,16 @@ export function SidebarMenu({
       <MenuItem onClick={onAddSkill}>
         <Plus className="h-3.5 w-3.5" />
         <span className="flex-1">Add Skill</span>
+      </MenuItem>
+    )
+  }
+
+  // Projects: show "Add Project"
+  if (type === 'projects' && onAddProject) {
+    return (
+      <MenuItem onClick={onAddProject}>
+        <Plus className="h-3.5 w-3.5" />
+        <span className="flex-1">Add Project</span>
       </MenuItem>
     )
   }

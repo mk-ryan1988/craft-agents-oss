@@ -923,7 +923,7 @@ function AppShellContent({
   // We use controlled popovers instead of deep links so the user can type
   // their request in the popover UI before opening a new chat window.
   // add-source variants: add-source (generic), add-source-api, add-source-mcp, add-source-local
-  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-local' | 'add-skill' | null>(null)
+  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-local' | 'add-skill' | 'add-project' | null>(null)
 
   // Handler for "Configure Statuses" context menu action
   // Opens the EditPopover for status configuration
@@ -945,6 +945,12 @@ function AppShellContent({
   // Opens the EditPopover for adding a new skill
   const openAddSkill = useCallback(() => {
     setTimeout(() => setEditPopoverOpen('add-skill'), 50)
+  }, [])
+
+  // Handler for "Add Project" context menu action
+  // Opens the EditPopover for adding a new project
+  const openAddProject = useCallback(() => {
+    setTimeout(() => setEditPopoverOpen('add-project'), 50)
   }, [])
 
   // Create a new chat and select it
@@ -1301,6 +1307,11 @@ function AppShellContent({
                       icon: FolderGit2,
                       variant: isProjectsNavigation(navState) ? "default" : "ghost",
                       onClick: handleProjectsClick,
+                      // Context menu: Add Project
+                      contextMenu: {
+                        type: 'projects',
+                        onAddProject: openAddProject,
+                      },
                     },
                     {
                       id: "nav:sources",
@@ -1919,6 +1930,21 @@ function AppShellContent({
             side="bottom"
             align="start"
             {...getEditConfig('add-skill', activeWorkspace.rootPath)}
+          />
+          {/* Add Project EditPopover */}
+          <EditPopover
+            open={editPopoverOpen === 'add-project'}
+            onOpenChange={(isOpen) => setEditPopoverOpen(isOpen ? 'add-project' : null)}
+            modal={true}
+            trigger={
+              <div
+                className="fixed top-[120px] w-0 h-0 pointer-events-none"
+                style={{ left: sidebarWidth + 20 }}
+              />
+            }
+            side="bottom"
+            align="start"
+            {...getEditConfig('add-project', activeWorkspace.rootPath)}
           />
         </>
       )}

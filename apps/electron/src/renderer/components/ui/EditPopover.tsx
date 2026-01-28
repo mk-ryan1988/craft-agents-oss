@@ -65,6 +65,7 @@ export type EditContextKey =
   | 'add-source-mcp'   // Filter-specific: user is viewing MCPs
   | 'add-source-local' // Filter-specific: user is viewing Local Folders
   | 'add-skill'
+  | 'add-project'
   | 'edit-statuses'
 
 /**
@@ -303,6 +304,22 @@ const EDIT_CONFIGS: Record<EditContextKey, (location: string) => EditConfig> = {
     },
     example: 'Review PRs following our code standards',
     overridePlaceholder: 'What should I learn to do?',
+  }),
+
+  'add-project': (location) => ({
+    context: {
+      label: 'Add Project',
+      filePath: `${location}/projects/`, // location is the workspace root path
+      context:
+        'The user wants to add a new project to their workspace. ' +
+        'Projects are git-repo-anchored containers that group related sessions. ' +
+        'Ask for the project root path (a directory containing a git repository). ' +
+        'Create the project using window.electronAPI.createProject(workspaceId, { rootPath, name?, slug? }). ' +
+        'The name defaults to the directory name, and slug is auto-generated from the name. ' +
+        'After creating the project, confirm the project was created successfully.',
+    },
+    example: 'Add my craft-agents repo as a project',
+    overridePlaceholder: 'What folder should I add as a project?',
   }),
 
   // Status configuration context
