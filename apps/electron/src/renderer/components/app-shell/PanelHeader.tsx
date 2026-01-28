@@ -110,14 +110,17 @@ export function PanelHeader({
 
   const content = (
     <>
-      {/* Project badge on the left */}
-      {projectBadge && (
-        <div className="titlebar-no-drag shrink-0">
-          {projectBadge}
-        </div>
-      )}
       <div className="flex-1 min-w-0 flex items-center select-none">
-        <div className="mx-auto w-fit">
+        <div className="mx-auto w-fit flex items-center gap-1">
+          {/* Project badge centered with title */}
+          {projectBadge && (
+            <>
+              <div className="titlebar-no-drag shrink-0">
+                {projectBadge}
+              </div>
+              <ChevronDown className="h-3 w-3 text-muted-foreground -rotate-90" />
+            </>
+          )}
           {titleMenu ? (
             <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
               {/* Wrapper button for the whole clickable area */}
