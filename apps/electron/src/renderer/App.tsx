@@ -13,7 +13,7 @@ import type { AppShellContextType } from '@/context/AppShellContext'
 import { OnboardingWizard, ReauthScreen } from '@/components/onboarding'
 import { ResetConfirmationDialog } from '@/components/ResetConfirmationDialog'
 import { SplashScreen } from '@/components/SplashScreen'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@craft-agent/ui'
 import { FocusProvider } from '@/context/FocusContext'
 import { ModalProvider } from '@/context/ModalContext'
 import { useGlobalShortcuts } from '@/hooks/keyboard'
@@ -25,6 +25,7 @@ import { useSession } from '@/hooks/useSession'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { NavigationProvider } from '@/contexts/NavigationContext'
 import { navigate, routes } from './lib/navigate'
+import { stripMarkdown } from './utils/text'
 import { initRendererPerf } from './lib/perf'
 import { DEFAULT_MODEL } from '@config/models'
 import {
@@ -42,7 +43,16 @@ import { sourcesAtom } from '@/atoms/sources'
 import { skillsAtom } from '@/atoms/skills'
 import { extractBadges } from '@/lib/mentions'
 import { getDefaultStore } from 'jotai'
-import { ShikiThemeProvider, PlatformProvider } from '@craft-agent/ui'
+import {
+  ShikiThemeProvider,
+  PlatformProvider,
+  ImagePreviewOverlay,
+  PDFPreviewOverlay,
+  CodePreviewOverlay,
+  DocumentFormattedMarkdownOverlay,
+  JSONPreviewOverlay,
+} from '@craft-agent/ui'
+import { useLinkInterceptor, type FilePreviewState } from '@/hooks/useLinkInterceptor'
 
 type AppState = 'loading' | 'onboarding' | 'reauth' | 'ready'
 
@@ -170,6 +180,9 @@ export default function App() {
   // Window's workspace ID - fixed for this window (multi-window architecture)
   const [windowWorkspaceId, setWindowWorkspaceId] = useState<string | null>(null)
   const [currentModel, setCurrentModel] = useState(DEFAULT_MODEL)
+  // Custom model override from API connection settings (OpenRouter, Ollama, etc.)
+  // When set, the Anthropic model selector is hidden and this model is shown instead.
+  const [customModel, setCustomModel] = useState<string | null>(null)
   const [menuNewChatTrigger, setMenuNewChatTrigger] = useState(0)
   // Permission requests per session (queue to handle multiple concurrent requests)
   const [pendingPermissions, setPendingPermissions] = useState<Map<string, PermissionRequest[]>>(new Map())
@@ -221,7 +234,7 @@ export default function App() {
   // Apply theme via hook (injects CSS variables)
   // shikiTheme is passed to ShikiThemeProvider to ensure correct syntax highlighting
   // theme for dark-only themes in light system mode
-  const { shikiTheme } = useTheme({ appTheme })
+  const { shikiTheme, isDark } = useTheme({ appTheme })
 
   // Ref for sessionOptions to access current value in event handlers without re-registering
   const sessionOptionsRef = useRef(sessionOptions)
@@ -234,6 +247,13 @@ export default function App() {
   const { processAgentEvent } = useEventProcessor()
 
   const DRAFT_SAVE_DEBOUNCE_MS = 500
+
+  // Re-fetch custom model from API setup config (called after API connection changes).
+  // Defined early so it can be passed to useOnboarding's onConfigSaved.
+  const refreshCustomModel = useCallback(async () => {
+    const billing = await window.electronAPI.getApiSetup()
+    setCustomModel(billing.customModel || null)
+  }, [])
 
   // Handle onboarding completion
   const handleOnboardingComplete = useCallback(async () => {
@@ -252,9 +272,11 @@ export default function App() {
     setAppState('ready')
   }, [])
 
-  // Onboarding hook
+  // Onboarding hook — onConfigSaved fires immediately when billing is saved,
+  // ensuring customModel context updates before the wizard closes.
   const onboarding = useOnboarding({
     onComplete: handleOnboardingComplete,
+    onConfigSaved: refreshCustomModel,
     initialSetupNeeds: setupNeeds || undefined,
   })
 
@@ -374,6 +396,10 @@ export default function App() {
         setCurrentModel(storedModel)
       }
     })
+    // Load custom model override from API connection settings
+    window.electronAPI.getApiSetup().then((billing) => {
+      setCustomModel(billing.customModel || null)
+    })
     // Load persisted input drafts into ref (no re-render needed)
     window.electronAPI.getAllDrafts().then((drafts) => {
       if (Object.keys(drafts).length > 0) {
@@ -409,7 +435,7 @@ export default function App() {
     // Handoff events signal end of streaming - need to sync back to React state
     // Also includes todo_state_changed so status updates immediately reflect in sidebar
     // async_operation included so shimmer effect on session titles updates in real-time
-    const handoffEventTypes = new Set(['complete', 'error', 'interrupted', 'typed_error', 'todo_state_changed', 'title_generated', 'async_operation'])
+    const handoffEventTypes = new Set(['complete', 'error', 'interrupted', 'typed_error', 'todo_state_changed', 'session_flagged', 'session_unflagged', 'name_changed', 'labels_changed', 'title_generated', 'async_operation'])
 
     // Helper to handle side effects (same logic for both paths)
     const handleEffects = (effects: Effect[], sessionId: string, eventType: string) => {
@@ -539,7 +565,9 @@ export default function App() {
             const lastMessage = updatedSession.messages.findLast(
               m => m.role === 'assistant' && !m.isIntermediate
             )
-            const preview = lastMessage?.content?.substring(0, 100) || undefined
+            // Strip markdown so OS notifications display clean plain text
+            const rawPreview = lastMessage?.content?.substring(0, 200) || undefined
+            const preview = rawPreview ? stripMarkdown(rawPreview).substring(0, 100) || undefined : undefined
             showSessionNotification(updatedSession, preview)
             playCompletionSound()
           }
@@ -662,19 +690,36 @@ export default function App() {
     window.electronAPI.sessionCommand(sessionId, { type: 'unflag' })
   }, [updateSessionById])
 
+  /**
+   * Set which session user is actively viewing (for unread state machine).
+   * Called when user navigates to a session. Main process uses this to determine
+   * whether to mark new assistant messages as unread.
+   */
+  const handleSetActiveViewingSession = useCallback((sessionId: string) => {
+    // Optimistic UI update: clear hasUnread immediately
+    updateSessionById(sessionId, { hasUnread: false })
+    // Tell main process user is viewing this session
+    window.electronAPI.sessionCommand(sessionId, { type: 'setActiveViewing', workspaceId: windowWorkspaceId ?? '' })
+  }, [updateSessionById, windowWorkspaceId])
+
   const handleMarkSessionRead = useCallback((sessionId: string) => {
-    // Find the session and compute the last final assistant message ID
+    // Update hasUnread flag (primary source of truth for NEW badge)
+    // Also update lastReadMessageId for backwards compatibility
     updateSessionById(sessionId, (s) => {
       const lastFinalId = s.messages.findLast(
         m => m.role === 'assistant' && !m.isIntermediate
       )?.id
-      return lastFinalId ? { lastReadMessageId: lastFinalId } : {}
+      return {
+        hasUnread: false,
+        ...(lastFinalId ? { lastReadMessageId: lastFinalId } : {}),
+      }
     })
     window.electronAPI.sessionCommand(sessionId, { type: 'markRead' })
   }, [updateSessionById])
 
   const handleMarkSessionUnread = useCallback((sessionId: string) => {
-    updateSessionById(sessionId, { lastReadMessageId: undefined })
+    // Set hasUnread flag (primary source of truth for NEW badge)
+    updateSessionById(sessionId, { hasUnread: true, lastReadMessageId: undefined })
     window.electronAPI.sessionCommand(sessionId, { type: 'markUnread' })
   }, [updateSessionById])
 
@@ -1014,21 +1059,29 @@ export default function App() {
     }
   }, [])
 
-  const handleOpenFile = useCallback(async (path: string) => {
-    try {
-      await window.electronAPI.openFile(path)
-    } catch (error) {
-      console.error('Failed to open file:', error)
-    }
-  }, [])
+  // Centralized link interceptor: classifies file types and decides whether to
+  // show an in-app preview overlay or open externally. Replaces the old
+  // handleOpenFile/handleOpenUrl that always opened in external apps.
+  const linkInterceptor = useLinkInterceptor({
+    openFileExternal: async (path) => {
+      try { await window.electronAPI.openFile(path) }
+      catch (error) { console.error('Failed to open file:', error) }
+    },
+    openUrl: async (url) => {
+      try { await window.electronAPI.openUrl(url) }
+      catch (error) { console.error('Failed to open URL:', error) }
+    },
+    showInFolder: async (path) => {
+      try { await window.electronAPI.showInFolder(path) }
+      catch (error) { console.error('Failed to show in folder:', error) }
+    },
+    readFile: (path) => window.electronAPI.readFile(path),
+    readFileDataUrl: (path) => window.electronAPI.readFileDataUrl(path),
+    readFileBinary: (path) => window.electronAPI.readFileBinary(path),
+  })
 
-  const handleOpenUrl = useCallback(async (url: string) => {
-    try {
-      await window.electronAPI.openUrl(url)
-    } catch (error) {
-      console.error('Failed to open URL:', error)
-    }
-  }, [])
+  const handleOpenFile = linkInterceptor.handleOpenFile
+  const handleOpenUrl = linkInterceptor.handleOpenUrl
 
   const handleOpenSettings = useCallback(() => {
     navigate(routes.view.settings())
@@ -1128,6 +1181,7 @@ export default function App() {
     workspaces,
     activeWorkspaceId: windowWorkspaceId,
     currentModel,
+    customModel,
     pendingPermissions,
     pendingCredentials,
     getDraft,
@@ -1140,6 +1194,7 @@ export default function App() {
     onUnflagSession: handleUnflagSession,
     onMarkSessionRead: handleMarkSessionRead,
     onMarkSessionUnread: handleMarkSessionUnread,
+    onSetActiveViewingSession: handleSetActiveViewingSession,
     onTodoStateChange: handleTodoStateChange,
     onDeleteSession: handleDeleteSession,
     onRespondToPermission: handleRespondToPermission,
@@ -1149,6 +1204,7 @@ export default function App() {
     onOpenUrl: handleOpenUrl,
     // Model
     onModelChange: handleModelChange,
+    refreshCustomModel,
     // Workspace
     onSelectWorkspace: handleSelectWorkspace,
     onRefreshWorkspaces: handleRefreshWorkspaces,
@@ -1167,6 +1223,7 @@ export default function App() {
     workspaces,
     windowWorkspaceId,
     currentModel,
+    customModel,
     pendingPermissions,
     pendingCredentials,
     getDraft,
@@ -1178,6 +1235,7 @@ export default function App() {
     handleUnflagSession,
     handleMarkSessionRead,
     handleMarkSessionUnread,
+    handleSetActiveViewingSession,
     handleTodoStateChange,
     handleDeleteSession,
     handleRespondToPermission,
@@ -1185,6 +1243,7 @@ export default function App() {
     handleOpenFile,
     handleOpenUrl,
     handleModelChange,
+    refreshCustomModel,
     handleSelectWorkspace,
     handleRefreshWorkspaces,
     handleOpenSettings,
@@ -1202,11 +1261,18 @@ export default function App() {
   const platformActions = useMemo(() => ({
     onOpenFile: handleOpenFile,
     onOpenUrl: handleOpenUrl,
+    // Bypass link interceptor — opens file directly in system editor.
+    // Used by overlay header badges (when already viewing a file, "Open" should launch editor).
+    onOpenFileExternal: linkInterceptor.openFileExternal,
+    // Reveal a file in the system file manager (Finder on macOS, Explorer on Windows)
+    onRevealInFinder: (path: string) => {
+      window.electronAPI.showInFolder(path).catch(() => {})
+    },
     // Hide/show macOS traffic lights when fullscreen overlays are open
     onSetTrafficLightsVisible: (visible: boolean) => {
       window.electronAPI.setTrafficLightsVisible(visible)
     },
-  }), [handleOpenFile, handleOpenUrl])
+  }), [handleOpenFile, handleOpenUrl, linkInterceptor.openFileExternal])
 
   // Loading state - show splash screen
   if (appState === 'loading') {
@@ -1243,16 +1309,17 @@ export default function App() {
           state={onboarding.state}
           onContinue={onboarding.handleContinue}
           onBack={onboarding.handleBack}
-          onSelectBillingMethod={onboarding.handleSelectBillingMethod}
+          onSelectApiSetupMethod={onboarding.handleSelectApiSetupMethod}
           onSubmitCredential={onboarding.handleSubmitCredential}
           onStartOAuth={onboarding.handleStartOAuth}
           onFinish={onboarding.handleFinish}
-          existingClaudeToken={onboarding.existingClaudeToken}
-          isClaudeCliInstalled={onboarding.isClaudeCliInstalled}
-          onUseExistingClaudeToken={onboarding.handleUseExistingClaudeToken}
           isWaitingForCode={onboarding.isWaitingForCode}
           onSubmitAuthCode={onboarding.handleSubmitAuthCode}
           onCancelOAuth={onboarding.handleCancelOAuth}
+          onBrowseGitBash={onboarding.handleBrowseGitBash}
+          onUseGitBashPath={onboarding.handleUseGitBashPath}
+          onRecheckGitBash={onboarding.handleRecheckGitBash}
+          onClearError={onboarding.handleClearError}
         />
       </ModalProvider>
     )
@@ -1301,6 +1368,17 @@ export default function App() {
               onCancel={() => setShowResetDialog(false)}
             />
           </div>
+
+          {/* File preview overlay — rendered by the link interceptor when a previewable file is clicked */}
+          {linkInterceptor.previewState && (
+            <FilePreviewRenderer
+              state={linkInterceptor.previewState}
+              onClose={linkInterceptor.closePreview}
+              loadDataUrl={linkInterceptor.readFileDataUrl}
+              loadPdfData={linkInterceptor.readFileBinary}
+              isDark={isDark}
+            />
+          )}
         </NavigationProvider>
         </TooltipProvider>
         </ModalProvider>
@@ -1317,4 +1395,118 @@ export default function App() {
 function WindowCloseHandler() {
   useWindowCloseHandler()
   return null
+}
+
+/**
+ * FilePreviewRenderer - Routes file preview state to the correct overlay component.
+ *
+ * Handles all preview types from the link interceptor:
+ * - image → ImagePreviewOverlay (binary, loaded via data URL)
+ * - pdf → PDFPreviewOverlay (binary, embedded via Chromium viewer)
+ * - code/text → CodePreviewOverlay (syntax highlighted)
+ * - markdown → DocumentFormattedMarkdownOverlay
+ * - json → JSONPreviewOverlay
+ *
+ * File path badges with "Open" / "Reveal in Finder" menus are provided
+ * automatically by PlatformContext — no per-overlay callback props needed.
+ */
+function FilePreviewRenderer({
+  state,
+  onClose,
+  loadDataUrl,
+  loadPdfData,
+  isDark,
+}: {
+  state: FilePreviewState
+  onClose: () => void
+  loadDataUrl: (path: string) => Promise<string>
+  loadPdfData: (path: string) => Promise<Uint8Array>
+  isDark: boolean
+}) {
+  const theme = isDark ? 'dark' : 'light' as const
+
+  switch (state.type) {
+    case 'image':
+      return (
+        <ImagePreviewOverlay
+          isOpen
+          onClose={onClose}
+          filePath={state.filePath}
+          loadDataUrl={loadDataUrl}
+          theme={theme}
+        />
+      )
+
+    case 'pdf':
+      return (
+        <PDFPreviewOverlay
+          isOpen
+          onClose={onClose}
+          filePath={state.filePath}
+          loadPdfData={loadPdfData}
+          theme={theme}
+        />
+      )
+
+    case 'code':
+    case 'text':
+      return (
+        <CodePreviewOverlay
+          isOpen
+          onClose={onClose}
+          filePath={state.filePath}
+          content={state.content ?? ''}
+          language={state.type === 'code' ? state.language : 'plaintext'}
+          mode="read"
+          theme={theme}
+          error={state.error}
+        />
+      )
+
+    case 'markdown':
+      return (
+        <DocumentFormattedMarkdownOverlay
+          isOpen
+          onClose={onClose}
+          content={state.content ?? ''}
+          filePath={state.filePath}
+        />
+      )
+
+    case 'json': {
+      // JSONPreviewOverlay expects parsed data, not a raw string
+      let parsedData: unknown = null
+      try {
+        if (state.content) parsedData = JSON.parse(state.content)
+      } catch {
+        // If parsing fails, fall back to showing as code
+        return (
+          <CodePreviewOverlay
+            isOpen
+            onClose={onClose}
+            filePath={state.filePath}
+            content={state.content ?? ''}
+            language="json"
+            mode="read"
+            theme={theme}
+            error={state.error}
+          />
+        )
+      }
+      return (
+        <JSONPreviewOverlay
+          isOpen
+          onClose={onClose}
+          filePath={state.filePath}
+          title={state.filePath.split('/').pop() ?? 'JSON'}
+          data={parsedData}
+          theme={theme}
+          error={state.error}
+        />
+      )
+    }
+
+    default:
+      return null
+  }
 }

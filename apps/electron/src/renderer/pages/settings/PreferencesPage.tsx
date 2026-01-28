@@ -180,12 +180,6 @@ export default function PreferencesPage() {
     setFormState(prev => ({ ...prev, [field]: value }))
   }, [])
 
-  // Handle opening preferences file in editor
-  const handleEditPreferences = useCallback(async () => {
-    if (!preferencesPath) return
-    await window.electronAPI.openFile(preferencesPath)
-  }, [preferencesPath])
-
   if (isLoading) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -199,7 +193,7 @@ export default function PreferencesPage() {
       <PanelHeader title="Preferences" actions={<HeaderMenu route={routes.view.settings('preferences')} helpFeature="preferences" />} />
       <div className="flex-1 min-h-0 mask-fade-y">
         <ScrollArea className="h-full">
-          <div className="px-5 py-7 max-w-3xl mx-auto space-y-6">
+          <div className="px-5 py-7 max-w-3xl mx-auto space-y-8">
           {/* Basic Info */}
           <SettingsSection
             title="Basic Info"
@@ -270,7 +264,7 @@ export default function PreferencesPage() {
                   {...getEditConfig('preferences-notes', preferencesPath)}
                   secondaryAction={{
                     label: 'Edit File',
-                    onClick: handleEditPreferences,
+                    filePath: preferencesPath!,
                   }}
                 />
               ) : null

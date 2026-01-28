@@ -12,9 +12,10 @@ import { Maximize2 } from 'lucide-react'
 import { Info_DataTable, SortableHeader } from './Info_DataTable'
 import { Info_Badge } from './Info_Badge'
 import { Info_StatusBadge } from './Info_StatusBadge'
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@craft-agent/ui'
 import { DataTableOverlay } from '@craft-agent/ui'
 import { cn } from '@/lib/utils'
+import { useTheme } from '@/hooks/useTheme'
 import { toast } from 'sonner'
 
 export type PermissionAccess = 'allowed' | 'blocked'
@@ -177,6 +178,7 @@ export function PermissionsDataTable({
   className,
 }: PermissionsDataTableProps) {
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const { isDark } = useTheme()
   const columns = hideTypeColumn ? columnsWithoutType : columnsWithType
 
   // Fullscreen button for toolbar - shown on hover
@@ -215,6 +217,7 @@ export function PermissionsDataTable({
           onClose={() => setIsFullscreen(false)}
           title={fullscreenTitle}
           subtitle={`${data.length} ${data.length === 1 ? 'rule' : 'rules'}`}
+          theme={isDark ? 'dark' : 'light'}
         >
           <Info_DataTable
             columns={columns}

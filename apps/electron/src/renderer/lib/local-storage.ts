@@ -16,6 +16,8 @@ export const KEYS = {
   sessionListWidth: 'session-list-width',
   sidebarMode: 'sidebar-mode',
   listFilter: 'list-filter',
+  labelFilter: 'label-filter',
+  viewFilters: 'view-filters', // Per-view filter map: { [viewKey]: { statuses, labels } }
   expandedFolders: 'expanded-folders',
   collapsedSidebarItems: 'collapsed-sidebar-items',
 
@@ -36,6 +38,9 @@ export const KEYS = {
 
   // Working directory
   recentWorkingDirs: 'recent-working-dirs',
+
+  // TurnCard expansion state (persisted across session switches)
+  turnCardExpansion: 'turncard-expansion',
 } as const
 
 export type StorageKey = typeof KEYS[keyof typeof KEYS]

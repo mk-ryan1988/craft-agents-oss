@@ -39,8 +39,10 @@ export const routes = {
      * @param input - Optional initial message to pre-fill or send
      * @param name - Optional session name
      * @param send - If true and input is provided, immediately sends the message
+     * @param status - Optional status/todo-state ID to apply to the new session
+     * @param label - Optional label ID to apply to the new session
      */
-    newChat: (params?: { input?: string; name?: string; send?: boolean }) =>
+    newChat: (params?: { input?: string; name?: string; send?: boolean; status?: string; label?: string }) =>
       `action/new-chat${toQueryString(params ? { ...params, send: params.send ? 'true' : undefined } : undefined)}` as const,
 
     /** Rename a session */
@@ -101,6 +103,18 @@ export const routes = {
         ? `state/${stateId}/chat/${sessionId}` as const
         : `state/${stateId}` as const,
 
+    /** Label filter view (chats navigator, label filter — includes descendants via tree hierarchy) */
+    label: (labelId: string, sessionId?: string) =>
+      sessionId
+        ? `label/${encodeURIComponent(labelId)}/chat/${sessionId}` as const
+        : `label/${encodeURIComponent(labelId)}` as const,
+
+    /** View filter (chats navigator, view filter — evaluated dynamically) */
+    view: (viewId: string, sessionId?: string) =>
+      sessionId
+        ? `view/${encodeURIComponent(viewId)}/chat/${sessionId}` as const
+        : `view/${encodeURIComponent(viewId)}` as const,
+
     /** Sources view (sources navigator) - supports type filtering */
     sources: (params?: { sourceSlug?: string; type?: 'api' | 'mcp' | 'local' }) => {
       const { sourceSlug, type } = params ?? {}
@@ -130,11 +144,11 @@ export const routes = {
         ? `sources/local/source/${sourceSlug}` as const
         : 'sources/local' as const,
 
-    /** Skills view (skills navigator) */
-    skills: (skillSlug?: string) =>
-      skillSlug
-        ? `skills/skill/${skillSlug}` as const
-        : 'skills' as const,
+    /** Skills view (skills navigator). Pass a slug string for a local skill detail view. */
+    skills: (skillSlug?: string) => {
+      if (!skillSlug) return 'skills' as const
+      return `skills/skill/${skillSlug}` as const
+    },
 
     /** Projects view (projects navigator) - shows sessions filtered by project */
     projects: (projectId?: string, sessionId?: string) => {
@@ -151,7 +165,7 @@ export const routes = {
     },
 
     /** Settings view (settings navigator) */
-    settings: (subpage?: 'app' | 'workspace' | 'permissions' | 'shortcuts' | 'preferences') =>
+    settings: (subpage?: 'app' | 'appearance' | 'workspace' | 'permissions' | 'labels' | 'shortcuts' | 'preferences') =>
       subpage && subpage !== 'app'
         ? `settings/${subpage}` as const
         : 'settings' as const,

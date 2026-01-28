@@ -1,22 +1,28 @@
 /**
  * MultiDiffPreviewOverlay - Overlay for multiple file changes (Edit/Write tools)
  *
+ * Layout: Stacked diffs using pierre's native file headers — GitHub PR-like view.
+ * Each diff renders its own file header (filename + addition/deletion counts) via @pierre/diffs.
+ * No card chrome or collapse — all diffs are visible in a single scrollable area.
+ *
  * Features:
- * - Sidebar navigation when multiple files changed
+ * - Stacked diffs with native pierre file headers (no custom card wrappers)
  * - Consolidated view (group by file) or individual changes
- * - Unified diff viewer for each change
- * - Focused change support (jump to specific change)
+ * - Unified/split diff viewer for each change
+ * - Focused change support (scroll to specific change on open)
+ * - Header shows file path for single file, "N edits" summary for multiple files
  */
 
 import * as React from 'react'
-import { useState, useMemo, useCallback, useEffect, type ReactNode } from 'react'
-import * as ReactDOM from 'react-dom'
-import { PencilLine, FilePlus, X, ChevronDown, Check } from 'lucide-react'
-import { ShikiDiffViewer } from '../code-viewer/ShikiDiffViewer'
-import { truncateFilePath } from '../code-viewer/language-map'
-import { useOverlayMode, OVERLAY_LAYOUT } from '../../lib/layout'
-import { PreviewHeader, PreviewHeaderBadge } from '../ui/PreviewHeader'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { PencilLine, FilePlus, X } from 'lucide-react'
+import { parseDiffFromFile, type FileContents } from '@pierre/diffs'
+import { ShikiDiffViewer, getDiffStats } from '../code-viewer/ShikiDiffViewer'
+import { DiffViewerControls } from '../code-viewer/DiffViewerControls'
+import { LANGUAGE_MAP } from '../code-viewer/language-map'
+import { PreviewOverlay, type BadgeVariant } from './PreviewOverlay'
 import { usePlatform } from '../../context/PlatformContext'
+import { cn } from '../../lib/utils'
 
 /**
  * A single file change (Edit or Write)
@@ -36,6 +42,15 @@ export interface FileChange {
   error?: string
 }
 
+/**
+ * Diff viewer display preferences
+ * Passed from parent to avoid localStorage usage - all settings stored in preferences.json
+ */
+export interface DiffViewerSettings {
+  diffStyle: 'unified' | 'split'
+  disableBackground: boolean
+}
+
 export interface MultiDiffPreviewOverlayProps {
   /** Whether the overlay is visible */
   isOpen: boolean
@@ -49,37 +64,42 @@ export interface MultiDiffPreviewOverlayProps {
   focusedChangeId?: string
   /** Theme mode */
   theme?: 'light' | 'dark'
-  /** Callback to open file in external editor */
-  onOpenFile?: (filePath: string) => void
+  /** Render inline without dialog (for playground) */
+  embedded?: boolean
+  /** Initial diff viewer settings (from user preferences) */
+  diffViewerSettings?: Partial<DiffViewerSettings>
+  /** Callback when diff viewer settings change (to persist to preferences) */
+  onDiffViewerSettingsChange?: (settings: DiffViewerSettings) => void
 }
 
 // ============================================
-// Sidebar Components
+// Helpers
 // ============================================
 
-interface SidebarEntry {
+/** A group of changes for a single file (or a single ungrouped change) */
+interface FileSection {
   key: string
   filePath: string
   changes: FileChange[]
-  toolType?: 'Edit' | 'Write'
 }
 
-function createSidebarEntries(changes: FileChange[], consolidated: boolean): SidebarEntry[] {
-  // Filter out errored changes for display
-  const successfulChanges = changes.filter(c => !c.error)
-
+/**
+ * Groups changes into file sections.
+ * In consolidated mode, changes to the same file are grouped together.
+ * In non-consolidated mode, each change is its own section.
+ */
+function createFileSections(changes: FileChange[], consolidated: boolean): FileSection[] {
   if (!consolidated) {
-    return successfulChanges.map(change => ({
+    return changes.map(change => ({
       key: change.id,
       filePath: change.filePath,
       changes: [change],
-      toolType: change.toolType,
     }))
   }
 
-  // Group by file path
+  // Group by file path, preserving order of first occurrence
   const byPath = new Map<string, FileChange[]>()
-  for (const change of successfulChanges) {
+  for (const change of changes) {
     const existing = byPath.get(change.filePath) || []
     existing.push(change)
     byPath.set(change.filePath, existing)
@@ -92,184 +112,14 @@ function createSidebarEntries(changes: FileChange[], consolidated: boolean): Sid
   }))
 }
 
-function getFileName(filePath: string): string {
-  return filePath.split('/').pop() || filePath
-}
-
-function getParentDir(filePath: string): string {
-  const parts = filePath.split('/')
-  if (parts.length <= 2) return ''
-  return parts.slice(-3, -1).join('/')
-}
-
-interface SidebarItemProps {
-  entry: SidebarEntry
-  isSelected: boolean
-  onClick: () => void
-  theme: 'light' | 'dark'
-}
-
-function SidebarItem({ entry, isSelected, onClick, theme }: SidebarItemProps) {
-  const fileName = getFileName(entry.filePath)
-  const parentDir = getParentDir(entry.filePath)
-  const changeCount = entry.changes.length
-
-  const isDark = theme === 'dark'
-  const textColor = isDark ? '#e4e4e4' : '#1a1a1a'
-  const mutedColor = isDark ? '#888888' : '#666666'
-
-  return (
-    <button
-      onClick={onClick}
-      title={entry.filePath}
-      className="w-full flex items-center gap-2 px-3 py-1.5 text-left rounded-md transition-colors"
-      style={{
-        color: textColor,
-        backgroundColor: isSelected
-          ? (isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)')
-          : 'transparent',
-      }}
-      onMouseEnter={(e) => {
-        if (!isSelected) {
-          e.currentTarget.style.backgroundColor = isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.02)'
-        }
-      }}
-      onMouseLeave={(e) => {
-        if (!isSelected) {
-          e.currentTarget.style.backgroundColor = 'transparent'
-        }
-      }}
-    >
-      <div className="flex-1 min-w-0">
-        <div className="text-sm truncate">{fileName}</div>
-        {parentDir && (
-          <div className="text-[10px] truncate" style={{ color: mutedColor }}>
-            {parentDir}
-          </div>
-        )}
-      </div>
-      {changeCount > 1 && (
-        <span className="text-xs shrink-0" style={{ color: mutedColor }}>
-          ({changeCount})
-        </span>
-      )}
-    </button>
-  )
-}
-
-interface SidebarProps {
-  entries: SidebarEntry[]
-  selectedKey: string | null
-  onSelect: (key: string) => void
-  theme: 'light' | 'dark'
-}
-
-function Sidebar({ entries, selectedKey, onSelect, theme }: SidebarProps) {
-  const isDark = theme === 'dark'
-  const mutedColor = isDark ? '#888888' : '#666666'
-
-  return (
-    <div className="space-y-0.5">
-      <div
-        className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
-        style={{ color: mutedColor }}
-      >
-        Changes
-      </div>
-      {entries.map(entry => (
-        <SidebarItem
-          key={entry.key}
-          entry={entry}
-          isSelected={selectedKey === entry.key}
-          onClick={() => onSelect(entry.key)}
-          theme={theme}
-        />
-      ))}
-    </div>
-  )
-}
-
-// ============================================
-// View Mode Dropdown (Snippet vs Full File)
-// ============================================
-
-interface ViewModeDropdownProps {
-  viewMode: 'snippet' | 'full'
-  onViewModeChange: (mode: 'snippet' | 'full') => void
-  disabled?: boolean
-  theme: 'light' | 'dark'
-}
-
-function ViewModeDropdown({ viewMode, onViewModeChange, disabled, theme }: ViewModeDropdownProps) {
-  const [isOpen, setIsOpen] = useState(false)
-  const isDark = theme === 'dark'
-
-  return (
-    <div className="relative ml-auto">
-      <button
-        disabled={disabled}
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1 h-[26px] px-2.5 rounded-[6px] text-[13px] font-medium transition-colors"
-        style={{
-          backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)',
-          color: isDark ? '#e4e4e4' : '#1a1a1a',
-          opacity: disabled ? 0.5 : 1,
-          cursor: disabled ? 'wait' : 'pointer',
-        }}
-      >
-        {viewMode === 'full' ? 'Full File' : 'Snippet'}
-        <ChevronDown className="w-3.5 h-3.5" />
-      </button>
-
-      {isOpen && (
-        <>
-          {/* Backdrop */}
-          <div
-            className="fixed inset-0 z-10"
-            onClick={() => setIsOpen(false)}
-          />
-
-          {/* Dropdown menu */}
-          <div
-            className="absolute right-0 top-full mt-1 z-20 py-1 rounded-lg shadow-lg min-w-[120px]"
-            style={{
-              backgroundColor: isDark ? '#2a2a2a' : '#ffffff',
-              border: `1px solid ${isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'}`,
-            }}
-          >
-            <button
-              onClick={() => { onViewModeChange('snippet'); setIsOpen(false) }}
-              className="w-full flex items-center justify-between px-3 py-1.5 text-sm transition-colors"
-              style={{ color: isDark ? '#e4e4e4' : '#1a1a1a' }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = 'transparent'
-              }}
-            >
-              Snippet
-              <Check className={`w-3.5 h-3.5 ${viewMode !== 'snippet' ? 'opacity-0' : ''}`} />
-            </button>
-            <button
-              onClick={() => { onViewModeChange('full'); setIsOpen(false) }}
-              className="w-full flex items-center justify-between px-3 py-1.5 text-sm transition-colors"
-              style={{ color: isDark ? '#e4e4e4' : '#1a1a1a' }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = 'transparent'
-              }}
-            >
-              Full File
-              <Check className={`w-3.5 h-3.5 ${viewMode !== 'full' ? 'opacity-0' : ''}`} />
-            </button>
-          </div>
-        </>
-      )}
-    </div>
-  )
+/** Compute diff stats for a single change */
+function computeChangeStats(change: FileChange) {
+  const ext = change.filePath.split('.').pop()?.toLowerCase() || ''
+  const lang = LANGUAGE_MAP[ext] || 'text'
+  const oldFile: FileContents = { name: change.filePath, contents: change.original, lang: lang as any }
+  const newFile: FileContents = { name: change.filePath, contents: change.modified, lang: lang as any }
+  const fileDiff = parseDiffFromFile(oldFile, newFile)
+  return getDiffStats(fileDiff)
 }
 
 // ============================================
@@ -283,256 +133,236 @@ export function MultiDiffPreviewOverlay({
   consolidated = true,
   focusedChangeId,
   theme = 'light',
-  onOpenFile,
+  embedded,
+  diffViewerSettings,
+  onDiffViewerSettingsChange,
 }: MultiDiffPreviewOverlayProps) {
-  const responsiveMode = useOverlayMode()
-  const isModal = responsiveMode === 'modal'
-  const { onSetTrafficLightsVisible } = usePlatform()
+  const { onOpenFileExternal } = usePlatform()
 
-  // Hide macOS traffic lights when overlay opens, restore when it closes
-  useEffect(() => {
-    if (!isOpen) return
+  // Ref map for scroll-to-focused-change support
+  const changeRefs = useRef<Map<string, HTMLDivElement>>(new Map())
 
-    onSetTrafficLightsVisible?.(false)
-    return () => onSetTrafficLightsVisible?.(true)
-  }, [isOpen, onSetTrafficLightsVisible])
-
-  const isDark = theme === 'dark'
-  const backgroundColor = isDark ? '#1e1e1e' : '#ffffff'
-  const textColor = isDark ? '#e4e4e4' : '#1a1a1a'
-  const sidebarBg = isDark ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.01)'
-
-  // Create sidebar entries
-  const sidebarEntries = useMemo(() => {
-    return createSidebarEntries(changes, consolidated)
+  // Build file sections (grouped or ungrouped)
+  const fileSections = useMemo(() => {
+    return createFileSections(changes, consolidated)
   }, [changes, consolidated])
 
-  // Selection state
-  const [selectedKey, setSelectedKey] = useState<string | null>(() => {
-    // If focusedChangeId provided, find and select it
-    if (focusedChangeId) {
-      if (!consolidated) {
-        return focusedChangeId
-      }
-      // In consolidated mode, find the file that contains this change
-      const change = changes.find(c => c.id === focusedChangeId)
-      if (change) {
-        return change.filePath
-      }
+  // ── Fade-in reveal ──────────────────────────────────────────────────
+  // Content starts invisible (opacity 0) while ShikiDiffViewers load and
+  // scroll position is achieved. Once all diffs fire onReady AND scroll is
+  // done, we reveal with a CSS transition. If everything is ready within
+  // the first frame (~50ms), we skip the transition for an instant show.
+  // Only count visible (non-error) diffs for reveal gating
+  const diffCount = useMemo(() => changes.filter(c => !c.error).length, [changes])
+  const readyCountRef = useRef(0)
+  const scrollDoneRef = useRef(!focusedChangeId) // no scroll needed → already done
+  const revealedRef = useRef(false)
+  const mountedAtRef = useRef(performance.now())
+  const [contentVisible, setContentVisible] = useState(false)
+  const [animateReveal, setAnimateReveal] = useState(true)
+
+  const checkReveal = useCallback(() => {
+    if (revealedRef.current) return
+    if (readyCountRef.current >= diffCount && scrollDoneRef.current) {
+      revealedRef.current = true
+      // If all conditions met within first frame, show instantly (no transition)
+      const elapsed = performance.now() - mountedAtRef.current
+      if (elapsed < 50) setAnimateReveal(false)
+      setContentVisible(true)
     }
-    // Default to first entry
-    return sidebarEntries[0]?.key || null
-  })
+  }, [diffCount])
 
-  // View mode state (snippet vs full file)
-  // Note: Full file mode requires reading from filesystem which isn't available in overlay
-  // So we only support snippet mode in the overlay version
-  const [viewMode] = useState<'snippet' | 'full'>('snippet')
+  const handleDiffReady = useCallback(() => {
+    readyCountRef.current++
+    checkReveal()
+  }, [checkReveal])
 
-  // Reset selection when focusedChangeId changes (user clicked a specific change)
-  // Note: We intentionally don't include selectedKey to avoid resetting user selections
+  // Check reveal on mount — handles edge cases like diffCount=0 (all errors)
   useEffect(() => {
-    if (focusedChangeId) {
-      if (!consolidated) {
-        setSelectedKey(focusedChangeId)
-      } else {
-        const change = changes.find(c => c.id === focusedChangeId)
-        if (change) {
-          setSelectedKey(change.filePath)
-        }
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedChangeId])
+    checkReveal()
+  }, [checkReveal])
 
-  // Reset to first entry if current selection becomes invalid (e.g., changes array updated)
+  // Diff viewer controls state — initialized from props (user preferences)
+  // Settings are persisted via onDiffViewerSettingsChange callback to preferences.json
+  const [diffStyle, setDiffStyleInternal] = useState<'unified' | 'split'>(
+    diffViewerSettings?.diffStyle ?? 'unified'
+  )
+  const [disableBackground, setDisableBackgroundInternal] = useState(
+    diffViewerSettings?.disableBackground ?? false
+  )
+
+  // Wrap setters to also call the persistence callback
+  const setDiffStyle = useCallback((style: 'unified' | 'split') => {
+    setDiffStyleInternal(style)
+    onDiffViewerSettingsChange?.({ diffStyle: style, disableBackground })
+  }, [disableBackground, onDiffViewerSettingsChange])
+
+  const setDisableBackground = useCallback((disabled: boolean) => {
+    setDisableBackgroundInternal(disabled)
+    onDiffViewerSettingsChange?.({ diffStyle, disableBackground: disabled })
+  }, [diffStyle, onDiffViewerSettingsChange])
+
+  // Compute total diff stats for the overlay header
+  const totalStats = useMemo(() => {
+    let additions = 0
+    let deletions = 0
+    for (const change of changes) {
+      if (change.error) continue
+      const stats = computeChangeStats(change)
+      additions += stats.additions
+      deletions += stats.deletions
+    }
+    return { additions, deletions }
+  }, [changes])
+
+  // Scroll to focused change after mount, then signal scroll completion for reveal
   useEffect(() => {
-    if (sidebarEntries.length > 0) {
-      setSelectedKey(prevKey => {
-        // Keep current selection if it's still valid
-        if (prevKey && sidebarEntries.find(e => e.key === prevKey)) {
-          return prevKey
-        }
-        // Otherwise select first entry
-        return sidebarEntries[0]?.key || null
-      })
+    if (!focusedChangeId) {
+      scrollDoneRef.current = true
+      checkReveal()
+      return
     }
-  }, [sidebarEntries])
 
-  // Get selected entry
-  const selectedEntry = useMemo(() => {
-    if (!selectedKey) return null
-    return sidebarEntries.find(e => e.key === selectedKey) || null
-  }, [sidebarEntries, selectedKey])
+    // Small delay to allow ShikiDiffViewer to render (async syntax highlighting)
+    const timer = setTimeout(() => {
+      const el = changeRefs.current.get(focusedChangeId)
+      if (el) {
+        el.scrollIntoView({ behavior: 'instant', block: 'start' })
+      }
+      scrollDoneRef.current = true
+      checkReveal()
+    }, 150)
 
-  // Compute combined diff for the selected entry
-  const combinedDiff = useMemo(() => {
-    if (!selectedEntry) return { original: '', modified: '' }
+    return () => clearTimeout(timer)
+  }, [focusedChangeId, checkReveal])
 
-    const entryChanges = selectedEntry.changes
-    if (entryChanges.length === 1) {
-      const firstChange = entryChanges[0]
+  // Determine header content based on single vs. multiple files
+  const isMultiFile = fileSections.length > 1
+  const totalChangeCount = fileSections.reduce((acc, s) => acc + s.changes.length, 0)
+
+  // Type badge: for single file, show Edit/Write; for multi-file, show edit count
+  const typeBadge = useMemo((): { icon: typeof PencilLine; label: string; variant: BadgeVariant } => {
+    const hasWrite = changes.some(c => c.toolType === 'Write' && !c.error)
+    if (isMultiFile) {
       return {
-        original: firstChange?.original ?? '',
-        modified: firstChange?.modified ?? '',
+        icon: hasWrite ? FilePlus : PencilLine,
+        label: `${totalChangeCount} edit${totalChangeCount !== 1 ? 's' : ''}`,
+        variant: hasWrite ? 'green' : 'orange',
       }
     }
-
-    // Multiple changes to same file - combine with separator
-    const separator = '\n\n// ───────────────────────────────────────\n\n'
+    // Single file — show tool type and count if multiple changes
+    const firstSection = fileSections[0]
+    if (!firstSection) return { icon: PencilLine, label: 'Edit', variant: 'orange' }
+    const sectionHasWrite = firstSection.changes.some(c => c.toolType === 'Write')
+    const count = firstSection.changes.length
     return {
-      original: entryChanges.map(c => c.original).join(separator),
-      modified: entryChanges.map(c => c.modified).join(separator),
+      icon: sectionHasWrite ? FilePlus : PencilLine,
+      label: count > 1
+        ? `${count} ${sectionHasWrite ? 'Write' : 'Edit'}s`
+        : (sectionHasWrite ? 'Write' : 'Edit'),
+      variant: sectionHasWrite ? 'green' : 'orange',
     }
-  }, [selectedEntry])
+  }, [changes, isMultiFile, totalChangeCount, fileSections])
 
-  // Handle Escape key
-  useEffect(() => {
-    if (!isOpen) return
+  // Header file path (single file) or summary title (multi-file)
+  const headerFilePath = !isMultiFile ? fileSections[0]?.filePath : undefined
+  const headerTitle = isMultiFile
+    ? `${totalChangeCount} edit${totalChangeCount !== 1 ? 's' : ''} across ${fileSections.length} file${fileSections.length !== 1 ? 's' : ''}`
+    : undefined
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose()
-      }
+  // Header actions: total diff stats + viewer controls
+  const headerActions = (
+    <DiffViewerControls
+      additions={totalStats.additions}
+      deletions={totalStats.deletions}
+      diffStyle={diffStyle}
+      onDiffStyleChange={setDiffStyle}
+      disableBackground={disableBackground}
+      onBackgroundChange={setDisableBackground}
+    />
+  )
+
+  // Ref callback to register each change element for scroll-to support
+  const setChangeRef = useCallback((changeId: string, el: HTMLDivElement | null) => {
+    if (el) {
+      changeRefs.current.set(changeId, el)
+    } else {
+      changeRefs.current.delete(changeId)
     }
-
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [isOpen, onClose])
-
-  const handleSelectEntry = useCallback((key: string) => {
-    setSelectedKey(key)
   }, [])
 
-  if (!isOpen) return null
-
-  // Determine if we should show sidebar
-  const showSidebar = sidebarEntries.length > 1
-
-  // Build header content
-  const headerContent = (
-    <>
-      {selectedEntry && (
-        <>
-          {(() => {
-            const hasWrite = selectedEntry.changes.some(c => c.toolType === 'Write')
-            const IconComponent = hasWrite ? FilePlus : PencilLine
-            const label = hasWrite ? 'Write' : 'Edit'
-            const variant = hasWrite ? 'green' : 'orange'
-            return (
-              <PreviewHeaderBadge
-                icon={IconComponent}
-                label={selectedEntry.changes.length > 1 ? `${selectedEntry.changes.length} ${label}s` : label}
-                variant={variant as any}
-              />
-            )
-          })()}
-          <PreviewHeaderBadge
-            label={truncateFilePath(selectedEntry.filePath)}
-            onClick={onOpenFile ? () => onOpenFile(selectedEntry.filePath) : undefined}
-            shrinkable
-          />
-        </>
-      )}
-      {!selectedEntry && sidebarEntries.length > 0 && (
-        <span className="text-sm" style={{ color: isDark ? '#888' : '#666' }}>
-          {sidebarEntries.length} file{sidebarEntries.length !== 1 ? 's' : ''}
-        </span>
-      )}
-    </>
-  )
-
-  const mainContent = (
-    <div className="flex h-full">
-      {/* Sidebar */}
-      {showSidebar && (
-        <div
-          className="w-64 shrink-0 h-full overflow-y-auto"
-          style={{
-            backgroundColor: sidebarBg,
-            borderRight: `1px solid ${isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)'}`,
-          }}
-        >
-          <div className="px-2 py-2">
-            <Sidebar
-              entries={sidebarEntries}
-              selectedKey={selectedKey}
-              onSelect={handleSelectEntry}
-              theme={theme}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Main diff area */}
-      <div className="flex-1 min-w-0 h-full" style={{ backgroundColor }}>
-        {selectedEntry ? (
-          <ShikiDiffViewer
-            key={selectedKey}
-            original={combinedDiff.original}
-            modified={combinedDiff.modified}
-            filePath={selectedEntry.filePath}
-            diffStyle="unified"
-            theme={theme}
-          />
-        ) : (
-          <div
-            className="h-full flex items-center justify-center"
-            style={{ color: isDark ? '#888' : '#666' }}
-          >
-            Select a file to view changes
-          </div>
-        )}
-      </div>
-    </div>
-  )
-
-  // Fullscreen mode - covers entire viewport
-  if (!isModal) {
-    return ReactDOM.createPortal(
-      <div
-        className="fixed inset-0 z-fullscreen flex flex-col"
-        style={{ backgroundColor, color: textColor }}
-      >
-        <PreviewHeader onClose={onClose} height={54}>
-          {headerContent}
-        </PreviewHeader>
-        <div className="flex-1 min-h-0">
-          {mainContent}
-        </div>
-      </div>,
-      document.body
-    )
-  }
-
-  // Modal mode
-  return ReactDOM.createPortal(
-    <div
-      className={`fixed inset-0 z-50 flex items-center justify-center ${OVERLAY_LAYOUT.modalBackdropClass}`}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
+  return (
+    <PreviewOverlay
+      isOpen={isOpen}
+      onClose={onClose}
+      theme={theme}
+      typeBadge={typeBadge}
+      filePath={headerFilePath}
+      title={headerTitle}
+      headerActions={headerActions}
+      embedded={embedded}
+      className="bg-foreground-3"
     >
+      {/* Stacked diffs — flow layout inside parent scroll container.
+          Hidden until all diffs are loaded + scroll position achieved (fade-in reveal). */}
       <div
-        className="flex flex-col overflow-hidden smooth-corners"
-        style={{
-          backgroundColor,
-          color: textColor,
-          width: '90vw',
-          maxWidth: OVERLAY_LAYOUT.modalMaxWidth,
-          height: `${OVERLAY_LAYOUT.modalMaxHeightPercent}vh`,
-          borderRadius: 16,
-          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
-        }}
+        className={cn(
+          "flex px-6 min-h-full",
+          animateReveal && "transition-opacity duration-150"
+        )}
+        style={{ opacity: contentVisible ? 1 : 0 }}
       >
-        <PreviewHeader onClose={onClose} height={48}>
-          {headerContent}
-        </PreviewHeader>
-        <div className="flex-1 min-h-0">
-          {mainContent}
+        <div className="m-auto" style={{ width: 'max-content', maxWidth: '100%', minWidth: 'min(850px, 100%)' }}>
+          {/* Stacked diffs: each ShikiDiffViewer renders with pierre's native file header.
+              No card chrome or collapse — continuous stacked layout like a GitHub PR diff. */}
+          <div className="flex flex-col gap-4">
+            {fileSections.map((section) => (
+              <div key={section.key} className="flex flex-col gap-4">
+                {section.changes.map((change) => (
+                  <div
+                    key={change.id}
+                    ref={(el) => setChangeRef(change.id, el)}
+                    className="rounded-xl overflow-hidden bg-background shadow-minimal"
+                    style={{ minHeight: change.error ? undefined : 200, borderRadius: 12 }}
+                  >
+                    {change.error ? (
+                      // Errored change — tinted error banner
+                      <div className="px-4 py-4">
+                        <div
+                          className="flex items-start gap-3 px-4 py-3 rounded-[8px] bg-[color-mix(in_oklab,var(--destructive)_5%,var(--background))] shadow-tinted"
+                          style={{ '--shadow-color': 'var(--destructive-rgb)' } as React.CSSProperties}
+                        >
+                          <X className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-semibold text-destructive/70 mb-0.5">
+                              {change.toolType} Failed
+                            </div>
+                            <p className="text-sm text-destructive whitespace-pre-wrap break-words">
+                              {change.error}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <ShikiDiffViewer
+                        original={change.original}
+                        modified={change.modified}
+                        filePath={change.filePath}
+                        diffStyle={diffStyle}
+                        disableBackground={disableBackground}
+                        disableFileHeader={false}
+                        onFileHeaderClick={onOpenFileExternal}
+                        theme={theme}
+                        onReady={handleDiffReady}
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
-    </div>,
-    document.body
+    </PreviewOverlay>
   )
 }

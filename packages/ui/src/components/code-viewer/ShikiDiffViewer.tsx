@@ -54,6 +54,16 @@ function getLanguageFromPath(filePath: string, explicit?: string): string {
   return LANGUAGE_MAP[ext] || 'text'
 }
 
+export function getDiffStats(fileDiff: FileDiffMetadata): { additions: number; deletions: number } {
+  let additions = 0
+  let deletions = 0
+  for (const hunk of fileDiff.hunks) {
+    additions += hunk.additionCount
+    deletions += hunk.deletionCount
+  }
+  return { additions, deletions }
+}
+
 /**
  * ShikiDiffViewer - Shiki-based diff viewer component
  */

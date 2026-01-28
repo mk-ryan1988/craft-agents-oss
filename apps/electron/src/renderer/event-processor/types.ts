@@ -5,7 +5,7 @@
  * All agent events flow through a single pure function for consistent state transitions.
  */
 
-import type { Session, Message, PermissionRequest, CredentialRequest, TypedError, PermissionMode, TodoState, AuthRequest } from '../../shared/types'
+import type { Session, Message, PermissionRequest, CredentialRequest, TypedError, PermissionMode, TodoState, AuthRequest, ToolDisplayMeta } from '../../shared/types'
 
 /**
  * Streaming state for a session - replaces streamingTextRef
@@ -60,6 +60,8 @@ export interface ToolStartEvent {
   parentToolUseId?: string
   toolIntent?: string
   toolDisplayName?: string
+  /** Tool display metadata with base64-encoded icon for viewer compatibility */
+  toolDisplayMeta?: ToolDisplayMeta
 }
 
 /**
@@ -77,24 +79,14 @@ export interface ToolResultEvent {
 }
 
 /**
- * Parent update event - deferred parent assignment
- * When multiple parent tools (Tasks) are active, we can't determine the correct
- * parent at tool_start time. This event assigns the correct parent once we know it.
- */
-export interface ParentUpdateEvent {
-  type: 'parent_update'
-  sessionId: string
-  toolUseId: string
-  parentToolUseId: string
-}
-
-/**
  * Complete event - agent loop finished
  */
 export interface CompleteEvent {
   type: 'complete'
   sessionId: string
   tokenUsage?: Session['tokenUsage']
+  /** Explicit unread flag - set by main process based on viewing state */
+  hasUnread?: boolean
 }
 
 /**
@@ -136,6 +128,46 @@ export interface ProjectChangedEvent {
   type: 'project_changed'
   sessionId: string
   projectId?: string
+}
+
+/**
+ * Labels changed event
+ */
+export interface LabelsChangedEvent {
+  type: 'labels_changed'
+  sessionId: string
+  labels: string[]
+}
+
+/**
+ * Todo state changed event (external metadata change or agent tool)
+ */
+export interface TodoStateChangedEvent {
+  type: 'todo_state_changed'
+  sessionId: string
+  todoState?: string
+}
+
+/**
+ * Session flagged/unflagged events (external metadata change)
+ */
+export interface SessionFlaggedEvent {
+  type: 'session_flagged'
+  sessionId: string
+}
+
+export interface SessionUnflaggedEvent {
+  type: 'session_unflagged'
+  sessionId: string
+}
+
+/**
+ * Session name changed event (external metadata change)
+ */
+export interface NameChangedEvent {
+  type: 'name_changed'
+  sessionId: string
+  name?: string
 }
 
 /**
@@ -373,7 +405,6 @@ export type AgentEvent =
   | TextCompleteEvent
   | ToolStartEvent
   | ToolResultEvent
-  | ParentUpdateEvent
   | CompleteEvent
   | ErrorEvent
   | TypedErrorEvent
@@ -381,6 +412,11 @@ export type AgentEvent =
   | CredentialRequestEvent
   | SourcesChangedEvent
   | ProjectChangedEvent
+  | LabelsChangedEvent
+  | TodoStateChangedEvent
+  | SessionFlaggedEvent
+  | SessionUnflaggedEvent
+  | NameChangedEvent
   | PlanSubmittedEvent
   | StatusEvent
   | InfoEvent

@@ -7,6 +7,7 @@
 
 import { homedir } from 'os';
 import { resolve, join, normalize, isAbsolute } from 'path';
+import { existsSync } from 'fs';
 
 /**
  * Expand path variables (~, ${HOME}, $HOME) to absolute paths.
@@ -107,4 +108,98 @@ export function hasPathVariables(path: string): boolean {
 export function isPortablePath(path: string): boolean {
   if (!path) return false;
   return path.startsWith('~') || path.startsWith('./') || !isAbsolute(path);
+}
+
+// ============================================================
+// Cross-Platform Path Utilities
+// ============================================================
+
+/**
+ * Normalize a path to use forward slashes for consistent cross-platform comparison.
+ * Use this before comparing paths or using regex patterns on paths.
+ *
+ * @example
+ * normalizePath('C:\\Users\\foo\\bar') // 'C:/Users/foo/bar'
+ * normalizePath('/Users/foo/bar')      // '/Users/foo/bar' (unchanged)
+ */
+export function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/');
+}
+
+/**
+ * Check if a file path starts with a directory path (cross-platform).
+ * Handles both Windows backslashes and Unix forward slashes.
+ *
+ * @example
+ * pathStartsWith('C:\\Users\\foo\\file.txt', 'C:\\Users\\foo') // true
+ * pathStartsWith('/home/user/file.txt', '/home/user')          // true
+ * pathStartsWith('/home/user2/file.txt', '/home/user')         // false
+ */
+export function pathStartsWith(filePath: string, dirPath: string): boolean {
+  const normalizedFile = normalizePath(filePath);
+  const normalizedDir = normalizePath(dirPath);
+  return normalizedFile.startsWith(normalizedDir + '/') || normalizedFile === normalizedDir;
+}
+
+/**
+ * Strip a directory prefix from a path (cross-platform).
+ * Returns the relative path portion after the prefix.
+ *
+ * @example
+ * stripPathPrefix('/home/user/docs/file.txt', '/home/user') // 'docs/file.txt'
+ * stripPathPrefix('C:\\foo\\bar\\baz.txt', 'C:\\foo')       // 'bar/baz.txt'
+ */
+export function stripPathPrefix(filePath: string, prefix: string): string {
+  const normalizedFile = normalizePath(filePath);
+  const normalizedPrefix = normalizePath(prefix);
+  if (normalizedFile.startsWith(normalizedPrefix + '/')) {
+    return normalizedFile.slice(normalizedPrefix.length + 1);
+  }
+  return filePath;
+}
+
+// ============================================================
+// Bundled Assets Resolution
+// ============================================================
+
+/**
+ * Module-level base directory for bundled assets.
+ * Set once at Electron startup via setBundledAssetsRoot(__dirname).
+ * In non-Electron contexts (tests, dev mode), process.cwd() candidates are used.
+ */
+let _assetsRoot: string | undefined;
+
+/**
+ * Register the Electron main process directory as the root for bundled assets.
+ * Call this once at app startup: setBundledAssetsRoot(__dirname)
+ *
+ * After this, getBundledAssetsDir('docs') will resolve to `<__dirname>/assets/docs/`
+ * in the packaged app, or fall back to dev paths if that doesn't exist.
+ */
+export function setBundledAssetsRoot(dir: string): void {
+  _assetsRoot = dir;
+}
+
+/**
+ * Resolve the path to a bundled assets subdirectory.
+ *
+ * Tries candidates in order:
+ * 1. Electron main process: <assetsRoot>/assets/<subfolder> (set via setBundledAssetsRoot)
+ * 2. Dev monorepo source:   <cwd>/packages/shared/assets/<subfolder>
+ * 3. Dev dist output:       <cwd>/dist/assets/<subfolder>
+ *
+ * Returns the first candidate that exists on disk, or undefined if none found.
+ *
+ * @param subfolder - Name of the assets subdirectory (e.g. 'docs', 'tool-icons', 'themes', 'permissions')
+ */
+export function getBundledAssetsDir(subfolder: string): string | undefined {
+  const candidates = [
+    // Electron main process (set via setBundledAssetsRoot at startup)
+    ...(_assetsRoot ? [join(_assetsRoot, 'assets', subfolder)] : []),
+    // Dev: monorepo source
+    join(process.cwd(), 'packages', 'shared', 'assets', subfolder),
+    // Dev: dist output (after build:copy)
+    join(process.cwd(), 'dist', 'assets', subfolder),
+  ];
+  return candidates.find(p => existsSync(p));
 }

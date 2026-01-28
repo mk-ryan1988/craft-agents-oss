@@ -20,12 +20,22 @@ export function createApplicationMenu(windowManager: WindowManager): void {
 /**
  * Rebuilds the application menu with current update state.
  * Call this when update availability changes.
+ *
+ * On Windows/Linux: Menu is hidden - all functionality is in the Craft logo menu.
+ * On macOS: Native menu is required by Apple guidelines, so we keep it synced.
  */
 export async function rebuildMenu(): Promise<void> {
   if (!cachedWindowManager) return
 
   const windowManager = cachedWindowManager
   const isMac = process.platform === 'darwin'
+
+  // On Windows/Linux, hide the native menu entirely
+  // Users access menu via the Craft logo dropdown in the app
+  if (!isMac) {
+    Menu.setApplicationMenu(null)
+    return
+  }
 
   // Get current update state
   const { getUpdateInfo, installUpdate, checkForUpdates } = await import('./auto-update')
@@ -149,20 +159,8 @@ export async function rebuildMenu(): Promise<void> {
           label: 'Check for Updates',
           click: async () => {
             const { checkForUpdates } = await import('./auto-update')
-            const info = await checkForUpdates({ autoDownload: false })
+            const info = await checkForUpdates({ autoDownload: true })
             mainLog.info('[debug-menu] Update check result:', info)
-          }
-        },
-        {
-          label: 'Download Update',
-          click: async () => {
-            const { downloadUpdate } = await import('./auto-update')
-            try {
-              await downloadUpdate()
-              mainLog.info('[debug-menu] Download complete')
-            } catch (err) {
-              mainLog.error('[debug-menu] Download failed:', err)
-            }
           }
         },
         {
@@ -196,6 +194,10 @@ export async function rebuildMenu(): Promise<void> {
     {
       label: 'Help',
       submenu: [
+        {
+          label: 'Help & Documentation',
+          click: () => shell.openExternal('https://agents.craft.do/docs')
+        },
         {
           label: 'Keyboard Shortcuts',
           accelerator: 'CmdOrCtrl+/',

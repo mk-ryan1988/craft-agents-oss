@@ -62,14 +62,25 @@ export interface SessionConfig {
   name?: string;
   createdAt: number;
   lastUsedAt: number;
+  /** Timestamp of last meaningful message (user or final assistant). Used for date grouping in session list.
+   *  Separate from lastUsedAt which tracks any session access (auto-save, open to read, etc.). */
+  lastMessageAt?: number;
   /** Whether this session is flagged */
   isFlagged?: boolean;
   /** Permission mode for this session ('safe', 'ask', 'allow-all') */
   permissionMode?: PermissionMode;
   /** User-controlled todo state - determines inbox vs completed */
   todoState?: TodoState;
+  /** Labels applied to this session (bare IDs or "id::value" entries) */
+  labels?: string[];
   /** ID of last message user has read */
   lastReadMessageId?: string;
+  /**
+   * Explicit unread flag - single source of truth for NEW badge.
+   * Set to true when assistant message completes while user is NOT viewing.
+   * Set to false when user views the session (and not processing).
+   */
+  hasUnread?: boolean;
   /** Per-session source selection (source slugs) */
   enabledSourceSlugs?: string[];
   /** Working directory for this session (used by agent for bash commands and context) */
@@ -123,14 +134,24 @@ export interface SessionHeader {
   name?: string;
   createdAt: number;
   lastUsedAt: number;
+  /** Timestamp of last meaningful message — persisted separately from lastUsedAt for stable date grouping across restarts. */
+  lastMessageAt?: number;
   /** Whether this session is flagged */
   isFlagged?: boolean;
   /** Permission mode for this session ('safe', 'ask', 'allow-all') */
   permissionMode?: PermissionMode;
   /** User-controlled todo state - determines inbox vs completed */
   todoState?: TodoState;
+  /** Labels applied to this session (bare IDs or "id::value" entries) */
+  labels?: string[];
   /** ID of last message user has read */
   lastReadMessageId?: string;
+  /**
+   * Explicit unread flag - single source of truth for NEW badge.
+   * Set to true when assistant message completes while user is NOT viewing.
+   * Set to false when user views the session (and not processing).
+   */
+  hasUnread?: boolean;
   /** Per-session source selection (source slugs) */
   enabledSourceSlugs?: string[];
   /** Working directory for this session (used by agent for bash commands and context) */
@@ -167,6 +188,8 @@ export interface SessionHeader {
   preview?: string;
   /** Token usage statistics */
   tokenUsage: SessionTokenUsage;
+  /** ID of the last final (non-intermediate) assistant message - for unread detection without loading messages */
+  lastFinalMessageId?: string;
 }
 
 /**
@@ -178,6 +201,8 @@ export interface SessionMetadata {
   name?: string;
   createdAt: number;
   lastUsedAt: number;
+  /** Timestamp of last meaningful message — used for date grouping. Falls back to lastUsedAt for pre-fix sessions. */
+  lastMessageAt?: number;
   messageCount: number;
   /** Preview of first user message */
   preview?: string;
@@ -186,6 +211,8 @@ export interface SessionMetadata {
   isFlagged?: boolean;
   /** User-controlled todo state */
   todoState?: TodoState;
+  /** Labels applied to this session (bare IDs or "id::value" entries) */
+  labels?: string[];
   /** Permission mode for this session */
   permissionMode?: PermissionMode;
   /** Number of plan files for this session */
@@ -206,4 +233,16 @@ export interface SessionMetadata {
   model?: string;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
+  /** ID of last message user has read - for unread detection */
+  lastReadMessageId?: string;
+  /** ID of the last final (non-intermediate) assistant message - for unread detection */
+  lastFinalMessageId?: string;
+  /**
+   * Explicit unread flag - single source of truth for NEW badge.
+   * Set to true when assistant message completes while user is NOT viewing.
+   * Set to false when user views the session (and not processing).
+   */
+  hasUnread?: boolean;
+  /** Token usage statistics (from JSONL header, available without loading messages) */
+  tokenUsage?: SessionTokenUsage;
 }

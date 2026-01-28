@@ -14,13 +14,18 @@
 
 import type { SessionState, AgentEvent, ProcessResult } from './types'
 import { handleTextDelta, handleTextComplete } from './handlers/text'
-import { handleToolStart, handleToolResult, handleParentUpdate, handleTaskBackgrounded, handleShellBackgrounded, handleTaskProgress } from './handlers/tool'
+import { handleToolStart, handleToolResult, handleTaskBackgrounded, handleShellBackgrounded, handleTaskProgress } from './handlers/tool'
 import {
   handleComplete,
   handleError,
   handleTypedError,
   handleSourcesChanged,
   handleProjectChanged,
+  handleLabelsChanged,
+  handleTodoStateChanged,
+  handleSessionFlagged,
+  handleSessionUnflagged,
+  handleNameChanged,
   handlePermissionRequest,
   handleCredentialRequest,
   handlePlanSubmitted,
@@ -73,11 +78,6 @@ export function processEvent(
 
     case 'tool_result': {
       const newState = handleToolResult(state, event)
-      return { state: newState, effects: [] }
-    }
-
-    case 'parent_update': {
-      const newState = handleParentUpdate(state, event)
       return { state: newState, effects: [] }
     }
 
@@ -137,6 +137,21 @@ export function processEvent(
 
     case 'project_changed':
       return handleProjectChanged(state, event)
+
+    case 'labels_changed':
+      return handleLabelsChanged(state, event)
+
+    case 'todo_state_changed':
+      return handleTodoStateChanged(state, event)
+
+    case 'session_flagged':
+      return handleSessionFlagged(state, event)
+
+    case 'session_unflagged':
+      return handleSessionUnflagged(state, event)
+
+    case 'name_changed':
+      return handleNameChanged(state, event)
 
     case 'permission_request':
       return handlePermissionRequest(state, event)

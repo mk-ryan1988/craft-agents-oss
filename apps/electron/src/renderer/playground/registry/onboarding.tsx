@@ -1,8 +1,9 @@
 import type { ComponentEntry } from './types'
 import { WelcomeStep } from '@/components/onboarding/WelcomeStep'
-import { BillingMethodStep } from '@/components/onboarding/BillingMethodStep'
+import { APISetupStep } from '@/components/onboarding/APISetupStep'
 import { CredentialsStep } from '@/components/onboarding/CredentialsStep'
 import { CompletionStep } from '@/components/onboarding/CompletionStep'
+import { GitBashWarning, type GitBashStatus } from '@/components/onboarding/GitBashWarning'
 import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard'
 import type { OnboardingState } from '@/components/onboarding/OnboardingWizard'
 
@@ -11,8 +12,11 @@ const createOnboardingState = (overrides: Partial<OnboardingState> = {}): Onboar
   loginStatus: 'idle',
   credentialStatus: 'idle',
   completionStatus: 'complete',
-  billingMethod: null,
+  apiSetupMethod: null,
   isExistingUser: false,
+  gitBashStatus: { found: false, path: null, platform: 'win32' },
+  isRecheckingGitBash: false,
+  isCheckingGitBash: false,
   ...overrides,
 })
 
@@ -32,25 +36,32 @@ export const onboardingComponents: ComponentEntry[] = [
         control: { type: 'boolean' },
         defaultValue: false,
       },
+      {
+        name: 'isLoading',
+        description: 'Show loading state on continue button',
+        control: { type: 'boolean' },
+        defaultValue: false,
+      },
     ],
     variants: [
       { name: 'New User', props: { isExistingUser: false } },
       { name: 'Existing User', props: { isExistingUser: true } },
+      { name: 'Loading', props: { isLoading: true } },
     ],
     mockData: () => ({
       onContinue: noopHandler,
     }),
   },
   {
-    id: 'billing-method-step',
-    name: 'BillingMethodStep',
+    id: 'api-setup-step',
+    name: 'APISetupStep',
     category: 'Onboarding',
     description: 'Choose payment method for AI usage',
-    component: BillingMethodStep,
+    component: APISetupStep,
     props: [
       {
         name: 'selectedMethod',
-        description: 'Currently selected billing method',
+        description: 'Currently selected API setup method',
         control: {
           type: 'select',
           options: [
@@ -77,7 +88,7 @@ export const onboardingComponents: ComponentEntry[] = [
     id: 'credentials-step-api-key',
     name: 'Credentials - API Key',
     category: 'Onboarding',
-    description: 'Enter Anthropic API key for authentication',
+    description: 'API key + optional Base URL and Model for compatible APIs',
     component: CredentialsStep,
     props: [
       {
@@ -102,14 +113,14 @@ export const onboardingComponents: ComponentEntry[] = [
       },
     ],
     variants: [
-      { name: 'Idle', props: { billingMethod: 'api_key', status: 'idle' } },
-      { name: 'Validating', props: { billingMethod: 'api_key', status: 'validating' } },
-      { name: 'Success', props: { billingMethod: 'api_key', status: 'success' } },
-      { name: 'Error', props: { billingMethod: 'api_key', status: 'error', errorMessage: 'Invalid API key. Please check and try again.' } },
+      { name: 'Idle', props: { apiSetupMethod: 'api_key', status: 'idle' } },
+      { name: 'Validating', props: { apiSetupMethod: 'api_key', status: 'validating' } },
+      { name: 'Success', props: { apiSetupMethod: 'api_key', status: 'success' } },
+      { name: 'Error', props: { apiSetupMethod: 'api_key', status: 'error', errorMessage: 'Invalid API key. Please check and try again.' } },
     ],
     mockData: () => ({
-      billingMethod: 'api_key',
-      onSubmit: (cred: string) => console.log('[Playground] Submitted credential:', cred),
+      apiSetupMethod: 'api_key',
+      onSubmit: (data: { apiKey: string; baseUrl?: string; customModel?: string }) => console.log('[Playground] Submitted:', data),
       onStartOAuth: noopHandler,
       onBack: noopHandler,
     }),
@@ -128,12 +139,18 @@ export const onboardingComponents: ComponentEntry[] = [
           type: 'select',
           options: [
             { label: 'Idle', value: 'idle' },
-            { label: 'Waiting', value: 'validating' },
+            { label: 'Validating', value: 'validating' },
             { label: 'Success', value: 'success' },
             { label: 'Error', value: 'error' },
           ],
         },
         defaultValue: 'idle',
+      },
+      {
+        name: 'isWaitingForCode',
+        description: 'Show auth code entry form',
+        control: { type: 'boolean' },
+        defaultValue: false,
       },
       {
         name: 'errorMessage',
@@ -143,16 +160,21 @@ export const onboardingComponents: ComponentEntry[] = [
       },
     ],
     variants: [
-      { name: 'Idle', props: { billingMethod: 'claude_oauth', status: 'idle' } },
-      { name: 'Waiting', props: { billingMethod: 'claude_oauth', status: 'validating' } },
-      { name: 'Success', props: { billingMethod: 'claude_oauth', status: 'success' } },
-      { name: 'Error', props: { billingMethod: 'claude_oauth', status: 'error', errorMessage: 'Authentication failed. Please try again.' } },
+      { name: 'Idle', props: { apiSetupMethod: 'claude_oauth', status: 'idle' } },
+      { name: 'Waiting for Code', props: { apiSetupMethod: 'claude_oauth', status: 'idle', isWaitingForCode: true } },
+      { name: 'Waiting for Code - Validating', props: { apiSetupMethod: 'claude_oauth', status: 'validating', isWaitingForCode: true } },
+      { name: 'Waiting for Code - Error', props: { apiSetupMethod: 'claude_oauth', status: 'error', isWaitingForCode: true, errorMessage: 'Invalid authorization code.' } },
+      { name: 'Validating', props: { apiSetupMethod: 'claude_oauth', status: 'validating' } },
+      { name: 'Success', props: { apiSetupMethod: 'claude_oauth', status: 'success' } },
+      { name: 'Error', props: { apiSetupMethod: 'claude_oauth', status: 'error', errorMessage: 'Authentication failed. Please try again.' } },
     ],
     mockData: () => ({
-      billingMethod: 'claude_oauth',
-      onSubmit: (cred: string) => console.log('[Playground] Submitted credential:', cred),
+      apiSetupMethod: 'claude_oauth',
+      onSubmit: (data: { apiKey: string }) => console.log('[Playground] Submitted:', data),
       onStartOAuth: noopHandler,
       onBack: noopHandler,
+      onSubmitAuthCode: (code: string) => console.log('[Playground] Auth code:', code),
+      onCancelOAuth: noopHandler,
     }),
   },
   {
@@ -184,6 +206,60 @@ export const onboardingComponents: ComponentEntry[] = [
     }),
   },
   {
+    id: 'git-bash-warning',
+    name: 'GitBashWarning',
+    category: 'Onboarding',
+    description: 'Warning screen when Git Bash is not found on Windows',
+    component: GitBashWarning,
+    props: [
+      {
+        name: 'isRechecking',
+        description: 'Show loading state on re-check button',
+        control: { type: 'boolean' },
+        defaultValue: false,
+      },
+    ],
+    variants: [
+      {
+        name: 'Not Found',
+        props: {
+          status: { found: false, path: null, platform: 'win32' } as GitBashStatus,
+        },
+      },
+      {
+        name: 'Rechecking',
+        props: {
+          status: { found: false, path: null, platform: 'win32' } as GitBashStatus,
+          isRechecking: true,
+        },
+      },
+      {
+        name: 'With Suggested Path',
+        props: {
+          status: { found: false, path: 'C:\\Program Files\\Git\\bin\\bash.exe', platform: 'win32' } as GitBashStatus,
+        },
+      },
+      {
+        name: 'With Error',
+        props: {
+          status: { found: false, path: null, platform: 'win32' } as GitBashStatus,
+          errorMessage: 'File does not exist at the specified path',
+        },
+      },
+    ],
+    mockData: () => ({
+      status: { found: false, path: null, platform: 'win32' } as GitBashStatus,
+      onBrowse: async () => {
+        console.log('[Playground] Browse clicked')
+        return 'C:\\Program Files\\Git\\bin\\bash.exe'
+      },
+      onUsePath: (path: string) => console.log('[Playground] Use path:', path),
+      onRecheck: noopHandler,
+      onBack: noopHandler,
+      onClearError: noopHandler,
+    }),
+  },
+  {
     id: 'onboarding-wizard',
     name: 'OnboardingWizard',
     category: 'Onboarding',
@@ -204,27 +280,39 @@ export const onboardingComponents: ComponentEntry[] = [
         },
       },
       {
-        name: 'Billing Method',
+        name: 'Git Bash Warning',
         props: {
-          state: createOnboardingState({ step: 'billing-method' }),
+          state: createOnboardingState({ step: 'git-bash' }),
         },
       },
       {
-        name: 'Billing Method (Selected)',
+        name: 'Git Bash Warning (Rechecking)',
         props: {
-          state: createOnboardingState({ step: 'billing-method', billingMethod: 'claude_oauth' }),
+          state: createOnboardingState({ step: 'git-bash', isRecheckingGitBash: true }),
+        },
+      },
+      {
+        name: 'API Setup',
+        props: {
+          state: createOnboardingState({ step: 'api-setup' }),
+        },
+      },
+      {
+        name: 'API Setup (Selected)',
+        props: {
+          state: createOnboardingState({ step: 'api-setup', apiSetupMethod: 'claude_oauth' }),
         },
       },
       {
         name: 'Credentials - API Key',
         props: {
-          state: createOnboardingState({ step: 'credentials', billingMethod: 'api_key' }),
+          state: createOnboardingState({ step: 'credentials', apiSetupMethod: 'api_key' }),
         },
       },
       {
         name: 'Credentials - OAuth',
         props: {
-          state: createOnboardingState({ step: 'credentials', billingMethod: 'claude_oauth' }),
+          state: createOnboardingState({ step: 'credentials', apiSetupMethod: 'claude_oauth' }),
         },
       },
       {
@@ -248,10 +336,17 @@ export const onboardingComponents: ComponentEntry[] = [
       className: 'min-h-0 h-full',
       onContinue: noopHandler,
       onBack: noopHandler,
-      onSelectBillingMethod: (method: string) => console.log('[Playground] Selected billing:', method),
-      onSubmitCredential: (cred: string) => console.log('[Playground] Submitted:', cred),
+      onSelectApiSetupMethod: (method: string) => console.log('[Playground] Selected method:', method),
+      onSubmitCredential: (data: { apiKey: string; baseUrl?: string; customModel?: string }) => console.log('[Playground] Submitted:', data),
       onStartOAuth: noopHandler,
       onFinish: noopHandler,
+      onBrowseGitBash: async () => {
+        console.log('[Playground] Browse Git Bash clicked')
+        return 'C:\\Program Files\\Git\\bin\\bash.exe'
+      },
+      onUseGitBashPath: (path: string) => console.log('[Playground] Use Git Bash path:', path),
+      onRecheckGitBash: noopHandler,
+      onClearError: noopHandler,
     }),
   },
 ]

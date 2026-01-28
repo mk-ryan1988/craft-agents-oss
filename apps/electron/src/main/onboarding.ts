@@ -8,10 +8,10 @@ import { mainLog } from './logger'
 import { getAuthState, getSetupNeeds } from '@craft-agent/shared/auth'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { saveConfig, loadStoredConfig, generateWorkspaceId, type AuthType, type StoredConfig } from '@craft-agent/shared/config'
-import { getDefaultWorkspacesDir } from '@craft-agent/shared/workspaces'
+import { getDefaultWorkspacesDir, generateUniqueWorkspacePath } from '@craft-agent/shared/workspaces'
 import { CraftOAuth, getMcpBaseUrl } from '@craft-agent/shared/auth'
 import { validateMcpConnection } from '@craft-agent/shared/mcp'
-import { getExistingClaudeToken, getExistingClaudeCredentials, isClaudeCliInstalled, runClaudeSetupToken, startClaudeOAuth, exchangeClaudeCode, hasValidOAuthState, clearOAuthState } from '@craft-agent/shared/auth'
+import { startClaudeOAuth, exchangeClaudeCode, hasValidOAuthState, clearOAuthState } from '@craft-agent/shared/auth'
 import { getCredentialManager as getCredentialManagerFn } from '@craft-agent/shared/credentials'
 import {
   IPC_CHANNELS,
@@ -82,6 +82,9 @@ export function registerOnboardingHandlers(sessionManager: SessionManager): void
     authType?: AuthType  // Optional - if not provided, preserves existing auth type
     workspace?: { name: string; iconUrl?: string; mcpUrl?: string }  // Optional - if not provided, only updates billing
     credential?: string
+    mcpCredentials?: { accessToken: string; clientId?: string }
+    anthropicBaseUrl?: string | null
+    customModel?: string | null
   }): Promise<OnboardingSaveResult> => {
     mainLog.info('[Onboarding:Main] ONBOARDING_SAVE_CONFIG received', {
       authType: config.authType,
@@ -90,6 +93,9 @@ export function registerOnboardingHandlers(sessionManager: SessionManager): void
       mcpUrl: config.workspace?.mcpUrl,
       hasCredential: !!config.credential,
       credentialLength: config.credential?.length,
+      hasMcpCredentials: !!config.mcpCredentials,
+      anthropicBaseUrl: config.anthropicBaseUrl,
+      customModel: config.customModel,
     })
 
     try {
@@ -103,21 +109,11 @@ export function registerOnboardingHandlers(sessionManager: SessionManager): void
           await manager.setApiKey(config.credential)
           mainLog.info('[Onboarding:Main] API key saved successfully')
         } else if (config.authType === 'oauth_token') {
-          mainLog.info('[Onboarding:Main] Importing full Claude OAuth credentials...')
-          // Import full credentials including refresh token and expiry from Claude CLI
-          const cliCreds = getExistingClaudeCredentials()
-          if (cliCreds) {
-            await manager.setClaudeOAuthCredentials({
-              accessToken: cliCreds.accessToken,
-              refreshToken: cliCreds.refreshToken,
-              expiresAt: cliCreds.expiresAt,
-            })
-            mainLog.info('[Onboarding:Main] Claude OAuth credentials saved with refresh token')
-          } else {
-            // Fallback to just saving the access token
-            await manager.setClaudeOAuth(config.credential)
-            mainLog.info('[Onboarding:Main] Claude OAuth saved (access token only)')
-          }
+          // NOTE: For oauth_token, credentials are saved via ONBOARDING_EXCHANGE_CLAUDE_CODE
+          // which marks them with source: 'native'. We no longer import from Claude CLI.
+          // If we receive a credential here, it means user completed native OAuth flow.
+          mainLog.info('[Onboarding:Main] OAuth token auth type selected')
+          mainLog.info('[Onboarding:Main] Credentials should already be saved via native OAuth flow')
         }
       } else {
         mainLog.info('[Onboarding:Main] Skipping credential save', {
@@ -144,6 +140,26 @@ export function registerOnboardingHandlers(sessionManager: SessionManager): void
         newConfig.authType = config.authType
       }
 
+      // 3a. Update anthropicBaseUrl if provided
+      if (config.anthropicBaseUrl !== undefined) {
+        mainLog.info('[Onboarding:Main] Updating anthropicBaseUrl to', config.anthropicBaseUrl)
+        if (config.anthropicBaseUrl) {
+          newConfig.anthropicBaseUrl = config.anthropicBaseUrl
+        } else {
+          delete newConfig.anthropicBaseUrl
+        }
+      }
+
+      // 3b. Update customModel if provided
+      if (config.customModel !== undefined) {
+        mainLog.info('[Onboarding:Main] Updating customModel to', config.customModel)
+        if (config.customModel?.trim()) {
+          newConfig.customModel = config.customModel.trim()
+        } else {
+          delete newConfig.customModel
+        }
+      }
+
       // 4. Create workspace only if workspace info is provided
       let workspaceId: string | undefined
       if (config.workspace) {
@@ -158,12 +174,23 @@ export function registerOnboardingHandlers(sessionManager: SessionManager): void
         const workspace = {
           id: workspaceId,
           name: config.workspace.name,
-          rootPath: existingWorkspace?.rootPath ?? `${getDefaultWorkspacesDir()}/${workspaceId}`,
+          rootPath: existingWorkspace?.rootPath ?? generateUniqueWorkspacePath(config.workspace.name, getDefaultWorkspacesDir()),
           createdAt: existingWorkspace?.createdAt ?? Date.now(), // Preserve original creation time
           iconUrl: config.workspace.iconUrl,
           mcpUrl: config.workspace.mcpUrl,
         }
         mainLog.info('[Onboarding:Main] Workspace config:', workspace, existingWorkspace ? '(updating existing)' : '(new)')
+
+        // Save MCP credentials if provided
+        if (config.mcpCredentials) {
+          mainLog.info('[Onboarding:Main] Saving MCP credentials for workspace')
+          await manager.setWorkspaceOAuth(workspaceId, {
+            accessToken: config.mcpCredentials.accessToken,
+            tokenType: 'Bearer',
+            clientId: config.mcpCredentials.clientId,
+          })
+          mainLog.info('[Onboarding:Main] MCP credentials saved')
+        }
 
         if (existingIndex !== -1) {
           // Update existing workspace
@@ -184,8 +211,8 @@ export function registerOnboardingHandlers(sessionManager: SessionManager): void
 
           const defaultWorkspace = {
             id: workspaceId,
-            name: 'Default',
-            rootPath: `${getDefaultWorkspacesDir()}/${workspaceId}`,
+            name: 'My Workspace',
+            rootPath: generateUniqueWorkspacePath('My Workspace', getDefaultWorkspacesDir()),
             createdAt: Date.now(),
           }
           newConfig.workspaces.push(defaultWorkspace)
@@ -216,53 +243,6 @@ export function registerOnboardingHandlers(sessionManager: SessionManager): void
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
       mainLog.error('[Onboarding:Main] Save config error:', message, error)
-      return { success: false, error: message }
-    }
-  })
-
-  // Get existing Claude OAuth token from keychain/credentials file
-  ipcMain.handle(IPC_CHANNELS.ONBOARDING_GET_EXISTING_CLAUDE_TOKEN, async () => {
-    try {
-      mainLog.info('[Onboarding] Checking for existing Claude token...')
-      const token = getExistingClaudeToken()
-      mainLog.info('[Onboarding] Existing Claude token:', token ? `found (${token.length} chars)` : 'not found')
-      return token
-    } catch (error) {
-      mainLog.error('[Onboarding] Get existing Claude token error:', error)
-      return null
-    }
-  })
-
-  // Check if Claude CLI is installed
-  ipcMain.handle(IPC_CHANNELS.ONBOARDING_IS_CLAUDE_CLI_INSTALLED, async () => {
-    try {
-      mainLog.info('[Onboarding] Checking if Claude CLI is installed...')
-      mainLog.info('[Onboarding] Current PATH (first 300 chars):', (process.env.PATH || '').substring(0, 300))
-      const installed = isClaudeCliInstalled()
-      mainLog.info('[Onboarding] Claude CLI installed:', installed)
-      return installed
-    } catch (error) {
-      mainLog.error('[Onboarding] Check Claude CLI error:', error)
-      return false
-    }
-  })
-
-  // Run claude setup-token to get OAuth token
-  ipcMain.handle(IPC_CHANNELS.ONBOARDING_RUN_CLAUDE_SETUP_TOKEN, async () => {
-    try {
-      mainLog.info('[Onboarding] Starting claude setup-token...')
-      const result = await runClaudeSetupToken((status) => {
-        mainLog.info('[Onboarding] Claude setup-token status:', status)
-      })
-      mainLog.info('[Onboarding] Claude setup-token result:', {
-        success: result.success,
-        hasToken: !!result.token,
-        error: result.error,
-      })
-      return result
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error'
-      mainLog.error('[Onboarding] Run Claude setup-token error:', message, error)
       return { success: false, error: message }
     }
   })
@@ -300,15 +280,17 @@ export function registerOnboardingHandlers(sessionManager: SessionManager): void
         mainLog.info('[Onboarding] Claude code exchange status:', status)
       })
 
-      // Save credentials with refresh token support
+      // Save credentials with refresh token support and source marker
       const manager = getCredentialManagerFn()
       await manager.setClaudeOAuthCredentials({
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
         expiresAt: tokens.expiresAt,
+        source: 'native', // Mark as obtained from our native OAuth flow
       })
 
-      mainLog.info('[Onboarding] Claude OAuth successful')
+      const expiresAtDate = tokens.expiresAt ? new Date(tokens.expiresAt).toISOString() : 'never'
+      mainLog.info(`[Onboarding] Claude OAuth successful (expires: ${expiresAtDate})`)
       return { success: true, token: tokens.accessToken }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'

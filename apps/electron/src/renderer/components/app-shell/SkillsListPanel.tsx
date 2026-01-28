@@ -7,9 +7,11 @@
 
 import * as React from 'react'
 import { useState } from 'react'
-import { MoreHorizontal } from 'lucide-react'
+import { MoreHorizontal, Zap } from 'lucide-react'
 import { SkillAvatar } from '@/components/ui/skill-avatar'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription, EmptyContent } from '@/components/ui/empty'
+import { getDocUrl } from '@craft-agent/shared/docs/doc-links'
 import { Separator } from '@/components/ui/separator'
 import {
   DropdownMenu,
@@ -47,28 +49,48 @@ export function SkillsListPanel({
   workspaceRootPath,
   className,
 }: SkillsListPanelProps) {
-  return (
-    <ScrollArea className={cn('flex-1', className)}>
-      <div className="pb-2">
-        {skills.length === 0 ? (
-          <div className="px-4 py-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              No skills configured.
-            </p>
+  // Empty state - rendered outside ScrollArea for proper vertical centering
+  if (skills.length === 0) {
+    return (
+      <div className={cn('flex flex-col flex-1', className)}>
+        <Empty className="flex-1">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Zap />
+            </EmptyMedia>
+            <EmptyTitle>No skills configured</EmptyTitle>
+            <EmptyDescription>
+              Skills are reusable instructions that teach your agent specialized behaviors.
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <button
+              onClick={() => window.electronAPI.openUrl(getDocUrl('skills'))}
+              className="inline-flex items-center h-7 px-3 text-xs font-medium rounded-[8px] bg-foreground/[0.02] shadow-minimal hover:bg-foreground/[0.05] transition-colors"
+            >
+              Learn more
+            </button>
             {workspaceRootPath && (
-              <div className="mt-3 flex items-center justify-center">
-                <EditPopover
-                  trigger={
-                    <button className="text-sm text-foreground hover:underline">
-                      Add your first skill
-                    </button>
-                  }
-                  {...getEditConfig('add-skill', workspaceRootPath)}
-                />
-              </div>
+              <EditPopover
+                align="center"
+                trigger={
+                  <button className="inline-flex items-center h-7 px-3 text-xs font-medium rounded-[8px] bg-background shadow-minimal hover:bg-foreground/[0.03] transition-colors">
+                    Add Skill
+                  </button>
+                }
+                {...getEditConfig('add-skill', workspaceRootPath)}
+              />
             )}
-          </div>
-        ) : (
+          </EmptyContent>
+        </Empty>
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn('flex flex-col flex-1 min-h-0', className)}>
+      <ScrollArea className="flex-1">
+        <div className="pb-2">
           <div className="pt-2">
             {skills.map((skill, index) => (
               <SkillItem
@@ -82,9 +104,9 @@ export function SkillsListPanel({
               />
             ))}
           </div>
-        )}
-      </div>
-    </ScrollArea>
+        </div>
+      </ScrollArea>
+    </div>
   )
 }
 

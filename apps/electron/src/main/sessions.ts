@@ -1,4 +1,5 @@
 import { app } from 'electron'
+import * as Sentry from '@sentry/electron/main'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { rm, readFile } from 'fs/promises'
@@ -11,6 +12,8 @@ import {
   getWorkspaces,
   getWorkspaceByNameOrId,
   loadConfigDefaults,
+  getAnthropicBaseUrl,
+  resolveModelId,
   type Workspace,
 } from '@craft-agent/shared/config'
 import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'
@@ -21,9 +24,6 @@ import {
   saveSession as saveStoredSession,
   createSession as createStoredSession,
   deleteSession as deleteStoredSession,
-  flagSession as flagStoredSession,
-  unflagSession as unflagStoredSession,
-  setSessionTodoState as setStoredSessionTodoState,
   updateSessionMetadata,
   setPendingPlanExecution as setStoredPendingPlanExecution,
   markCompactionComplete as markStoredCompactionComplete,
@@ -45,9 +45,14 @@ import { setAnthropicOptionsEnv, setPathToClaudeCodeExecutable, setInterceptorPa
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient } from '@craft-agent/shared/mcp'
 import { type Session, type Message, type SessionEvent, type FileAttachment, type StoredAttachment, type SendMessageOptions, IPC_CHANNELS, generateMessageId } from '../shared/types'
-import { generateSessionTitle, regenerateSessionTitle, formatPathsToRelative, formatToolInputPaths, perf } from '@craft-agent/shared/utils'
-import { DEFAULT_MODEL } from '@craft-agent/shared/config'
+import { generateSessionTitle, regenerateSessionTitle, formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrl, getEmojiIcon, resetSummarizationClient, resolveToolIcon } from '@craft-agent/shared/utils'
+import { loadWorkspaceSkills, type LoadedSkill } from '@craft-agent/shared/skills'
+import type { ToolDisplayMeta } from '@craft-agent/core/types'
+import { DEFAULT_MODEL, getToolIconsDir } from '@craft-agent/shared/config'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
+import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
+import { listLabels } from '@craft-agent/shared/labels/storage'
+import { extractLabelId } from '@craft-agent/shared/labels'
 
 /**
  * Sanitize message content for use as session title.
@@ -73,8 +78,11 @@ export const AGENT_FLAGS = {
  * Build MCP and API servers from sources using the new unified modules.
  * Handles credential loading and server building in one step.
  * When auth errors occur, updates source configs to reflect actual state.
+ *
+ * @param sources - Sources to build servers for
+ * @param sessionPath - Optional path to session folder for saving large API responses
  */
-async function buildServersFromSources(sources: LoadedSource[]) {
+async function buildServersFromSources(sources: LoadedSource[], sessionPath?: string) {
   const span = perf.span('sources.buildServers', { count: sources.length })
   const credManager = getSourceCredentialManager()
   const serverBuilder = getSourceServerBuilder()
@@ -90,19 +98,37 @@ async function buildServersFromSources(sources: LoadedSource[]) {
   span.mark('credentials.loaded')
 
   // Build token getter for OAuth sources (Google, Slack, Microsoft use OAuth)
+  // Automatically refreshes expired or expiring tokens before API calls
   const getTokenForSource = (source: LoadedSource) => {
     const provider = source.config.provider
     if (isApiOAuthProvider(provider)) {
       return async () => {
-        const token = await credManager.getToken(source)
-        if (!token) throw new Error(`No token for ${source.config.slug}`)
-        return token
+        // Load credential with expiry info
+        const cred = await credManager.load(source)
+
+        // Refresh if expired or expiring soon (within 5 min)
+        if (!cred || credManager.isExpired(cred) || credManager.needsRefresh(cred)) {
+          sessionLog.debug(`[OAuth] Refreshing token for ${source.config.slug}`)
+          try {
+            const token = await credManager.refresh(source)
+            if (token) return token
+          } catch (err) {
+            sessionLog.warn(`[OAuth] Refresh failed for ${source.config.slug}: ${err}`)
+          }
+        }
+
+        // Use cached token if still valid
+        if (cred?.value) return cred.value
+
+        // No valid token after refresh attempt
+        throw new Error(`No token for ${source.config.slug}`)
       }
     }
     return undefined
   }
 
-  const result = await serverBuilder.buildAll(sourcesWithCreds, getTokenForSource)
+  // Pass sessionPath to enable saving large API responses to session folder
+  const result = await serverBuilder.buildAll(sourcesWithCreds, getTokenForSource, sessionPath)
   span.mark('servers.built')
   span.setMetadata('mcpCount', Object.keys(result.mcpServers).length)
   span.setMetadata('apiCount', Object.keys(result.apiServers).length)
@@ -122,6 +148,120 @@ async function buildServersFromSources(sources: LoadedSource[]) {
   return result
 }
 
+/**
+ * Resolve tool display metadata for a tool call.
+ * Returns metadata with base64-encoded icon for viewer compatibility.
+ *
+ * @param toolName - Tool name from the event (e.g., "Skill", "mcp__linear__list_issues")
+ * @param toolInput - Tool input (used for Skill tool to get skill identifier)
+ * @param workspaceRootPath - Path to workspace for loading skills/sources
+ * @param sources - Loaded sources for the workspace
+ */
+function resolveToolDisplayMeta(
+  toolName: string,
+  toolInput: Record<string, unknown> | undefined,
+  workspaceRootPath: string,
+  sources: LoadedSource[]
+): ToolDisplayMeta | undefined {
+  // Check if it's an MCP source tool (format: mcp__<sourceSlug>__<toolName>)
+  if (toolName.startsWith('mcp__')) {
+    const parts = toolName.split('__')
+    if (parts.length >= 2) {
+      const sourceSlug = parts[1]
+      const source = sources.find(s => s.config.slug === sourceSlug)
+      if (source) {
+        // Try file-based icon first, fall back to emoji icon from config
+        const iconDataUrl = source.iconPath
+          ? encodeIconToDataUrl(source.iconPath)
+          : getEmojiIcon(source.config.icon)
+        return {
+          displayName: source.config.name,
+          iconDataUrl,
+          description: source.config.tagline,
+          category: 'source' as const,
+        }
+      }
+    }
+    return undefined
+  }
+
+  // Check if it's the Skill tool
+  if (toolName === 'Skill' && toolInput) {
+    // Skill input has 'skill' param with format: "skillSlug" or "workspaceId:skillSlug"
+    const skillParam = toolInput.skill as string | undefined
+    if (skillParam) {
+      // Extract skill slug (remove workspace prefix if present)
+      const skillSlug = skillParam.includes(':') ? skillParam.split(':').pop() : skillParam
+      if (skillSlug) {
+        // Load skills and find the one being invoked
+        try {
+          const skills = loadWorkspaceSkills(workspaceRootPath)
+          const skill = skills.find(s => s.slug === skillSlug)
+          if (skill) {
+            // Try file-based icon first, fall back to emoji icon from metadata
+            const iconDataUrl = skill.iconPath
+              ? encodeIconToDataUrl(skill.iconPath)
+              : getEmojiIcon(skill.metadata.icon)
+            return {
+              displayName: skill.metadata.name,
+              iconDataUrl,
+              description: skill.metadata.description,
+              category: 'skill' as const,
+            }
+          }
+        } catch {
+          // Skills loading failed, skip
+        }
+      }
+    }
+    return undefined
+  }
+
+  // CLI tool icon resolution for Bash commands
+  // Parses the command string to detect known tools (git, npm, docker, etc.)
+  // and resolves their brand icon from ~/.craft-agent/tool-icons/
+  if (toolName === 'Bash' && toolInput?.command) {
+    const toolIconsDir = getToolIconsDir()
+    const match = resolveToolIcon(String(toolInput.command), toolIconsDir)
+    if (match) {
+      return {
+        displayName: match.displayName,
+        iconDataUrl: match.iconDataUrl,
+        category: 'native' as const,
+      }
+    }
+  }
+
+  // Native tool display names (no icons - UI handles these with built-in icons)
+  // This ensures toolDisplayMeta is always populated for consistent display
+  const nativeToolNames: Record<string, string> = {
+    'Read': 'Read',
+    'Write': 'Write',
+    'Edit': 'Edit',
+    'Bash': 'Terminal',
+    'Grep': 'Search',
+    'Glob': 'Find Files',
+    'Task': 'Agent',
+    'WebFetch': 'Fetch URL',
+    'WebSearch': 'Web Search',
+    'TodoWrite': 'Update Todos',
+    'NotebookEdit': 'Edit Notebook',
+    'KillShell': 'Kill Shell',
+    'TaskOutput': 'Task Output',
+  }
+
+  const nativeDisplayName = nativeToolNames[toolName]
+  if (nativeDisplayName) {
+    return {
+      displayName: nativeDisplayName,
+      category: 'native' as const,
+    }
+  }
+
+  // Unknown tool - no display metadata (will fall back to tool name in UI)
+  return undefined
+}
+
 interface ManagedSession {
   id: string
   workspace: Workspace
@@ -130,20 +270,13 @@ interface ManagedSession {
   isProcessing: boolean
   lastMessageAt: number
   streamingText: string
-  abortController?: AbortController
-  // Track tool_use_id -> toolName mapping (since tool_result only has toolUseId)
-  pendingTools: Map<string, string>
-  // Stack of parent tool IDs for nested tool calls (e.g., Task spawning Read/Grep)
-  // Using a stack handles concurrent parent tools correctly - each child tool
-  // gets associated with the most recent parent that started before it
-  parentToolStack: string[]
-  // Map of toolUseId -> parentToolUseId for tracking which parent was active when each tool started
-  // This is used to correctly attribute child tools even with concurrent parent tools
-  toolToParentMap: Map<string, string>
-  // Parent tool ID captured when text started streaming (first text_delta)
-  // Used by text_complete to assign correct parent - prevents text from being nested
-  // under tools that started after the text began (e.g., "I'll help..." before Task call)
-  pendingTextParent?: string
+  // Incremented each time a new message starts processing.
+  // Used to detect if a follow-up message has superseded the current one (stale-request guard).
+  processingGeneration: number
+  // NOTE: Parent-child tracking state (pendingTools, parentToolStack, toolToParentMap,
+  // pendingTextParent) has been removed. CraftAgent now provides parentToolUseId
+  // directly on all events using the SDK's authoritative parent_tool_use_id field.
+  // See: packages/shared/src/agent/tool-matching.ts
   // Session name (user-defined or AI-generated)
   name?: string
   isFlagged: boolean
@@ -168,10 +301,18 @@ interface ManagedSession {
   todoState?: string
   // Read/unread tracking - ID of last message user has read
   lastReadMessageId?: string
+  /**
+   * Explicit unread flag - single source of truth for NEW badge.
+   * Set to true when assistant message completes while user is NOT viewing.
+   * Set to false when user views the session (and not processing).
+   */
+  hasUnread?: boolean
   // Per-session source selection (slugs of enabled sources)
   enabledSourceSlugs?: string[]
   // Project ID this session belongs to
   projectId?: string
+  // Labels applied to this session (additive tags, many-per-session)
+  labels?: string[]
   // Working directory for this session (used by agent for bash commands)
   workingDirectory?: string
   // SDK cwd for session storage - set once at creation, never changes.
@@ -187,11 +328,17 @@ interface ManagedSession {
   thinkingLevel?: ThinkingLevel
   // Role/type of the last message (for badge display without loading messages)
   lastMessageRole?: 'user' | 'assistant' | 'plan' | 'tool' | 'error'
+  // ID of the last final (non-intermediate) assistant message - pre-computed for unread detection
+  lastFinalMessageId?: string
   // Whether an async operation is ongoing (sharing, updating share, revoking, title regeneration)
   // Used for shimmer effect on session title
   isAsyncOperationOngoing?: boolean
   // Preview of first user message (for sidebar display fallback)
   preview?: string
+  // When the session was first created (ms timestamp from JSONL header)
+  createdAt?: number
+  // Total message count (pre-computed in JSONL header for fast list loading)
+  messageCount?: number
   // Message queue for handling new messages while processing
   // When a message arrives during processing, we interrupt and queue
   messageQueue: Array<{
@@ -208,6 +355,16 @@ interface ManagedSession {
   // Pending auth request tracking (for unified auth flow)
   pendingAuthRequestId?: string
   pendingAuthRequest?: AuthRequest
+  // Auth retry tracking (for mid-session token expiry)
+  // Store last sent message/attachments to enable retry after token refresh
+  lastSentMessage?: string
+  lastSentAttachments?: FileAttachment[]
+  lastSentStoredAttachments?: StoredAttachment[]
+  lastSentOptions?: SendMessageOptions
+  // Flag to prevent infinite retry loops (reset at start of each sendMessage)
+  authRetryAttempted?: boolean
+  // Flag indicating auth retry is in progress (to prevent complete handler from interfering)
+  authRetryInProgress?: boolean
 }
 
 // Convert runtime Message to StoredMessage for persistence
@@ -226,6 +383,8 @@ function messageToStored(msg: Message): StoredMessage {
     toolStatus: msg.toolStatus,
     toolDuration: msg.toolDuration,
     toolIntent: msg.toolIntent,
+    toolDisplayName: msg.toolDisplayName,
+    toolDisplayMeta: msg.toolDisplayMeta,  // Includes base64 icon for viewer
     parentToolUseId: msg.parentToolUseId,
     isError: msg.isError,
     attachments: msg.attachments,
@@ -252,6 +411,7 @@ function messageToStored(msg: Message): StoredMessage {
     authLabels: msg.authLabels,
     authDescription: msg.authDescription,
     authHint: msg.authHint,
+    authSourceUrl: msg.authSourceUrl,
     authError: msg.authError,
     authEmail: msg.authEmail,
     authWorkspace: msg.authWorkspace,
@@ -273,6 +433,8 @@ function storedToMessage(stored: StoredMessage): Message {
     toolStatus: stored.toolStatus,
     toolDuration: stored.toolDuration,
     toolIntent: stored.toolIntent,
+    toolDisplayName: stored.toolDisplayName,
+    toolDisplayMeta: stored.toolDisplayMeta,  // Includes base64 icon for viewer
     parentToolUseId: stored.parentToolUseId,
     isError: stored.isError,
     attachments: stored.attachments,
@@ -299,6 +461,7 @@ function storedToMessage(stored: StoredMessage): Message {
     authLabels: stored.authLabels,
     authDescription: stored.authDescription,
     authHint: stored.authHint,
+    authSourceUrl: stored.authSourceUrl,
     authError: stored.authError,
     authEmail: stored.authEmail,
     authWorkspace: stored.authWorkspace,
@@ -325,6 +488,12 @@ export class SessionManager {
   private pendingCredentialResolvers: Map<string, (response: import('../shared/types').CredentialResponse) => void> = new Map()
   // Promise deduplication for lazy-loading messages (prevents race conditions)
   private messageLoadingPromises: Map<string, Promise<void>> = new Map()
+  /**
+   * Track which session the user is actively viewing (per workspace).
+   * Map of workspaceId -> sessionId. Used to determine if a session should be
+   * marked as unread when assistant completes - if user is viewing it, don't mark unread.
+   */
+  private activeViewingSession: Map<string, string> = new Map()
 
   setWindowManager(wm: WindowManager): void {
     this.windowManager = wm
@@ -333,16 +502,16 @@ export class SessionManager {
   /**
    * Set up ConfigWatcher for a workspace to broadcast live updates
    * (sources added/removed, guide.md changes, etc.)
-   * Public so ipc.ts can call it when sources are first requested
-   * Supports multiple workspaces simultaneously
+   * Called during window init (GET_WINDOW_WORKSPACE) and workspace switch.
+   * workspaceId must be the global config ID (what the renderer knows).
    */
-  setupConfigWatcher(workspaceRootPath: string): void {
+  setupConfigWatcher(workspaceRootPath: string, workspaceId: string): void {
     // Check if already watching this workspace
     if (this.configWatchers.has(workspaceRootPath)) {
       return // Already watching this workspace
     }
 
-    sessionLog.info(`Setting up ConfigWatcher for workspace: ${workspaceRootPath}`)
+    sessionLog.info(`Setting up ConfigWatcher for workspace: ${workspaceId} (${workspaceRootPath})`)
 
     const callbacks: ConfigWatcherCallbacks = {
       onSourcesListChange: async (sources: LoadedSource[]) => {
@@ -375,13 +544,17 @@ export class SessionManager {
         const sources = loadWorkspaceSources(workspaceRootPath)
         this.broadcastSourcesChanged(sources)
       },
-      onStatusConfigChange: (workspaceId: string) => {
+      onStatusConfigChange: () => {
         sessionLog.info(`Status config changed in ${workspaceId}`)
         this.broadcastStatusesChanged(workspaceId)
       },
-      onStatusIconChange: (workspaceId: string, iconFilename: string) => {
+      onStatusIconChange: (_workspaceId: string, iconFilename: string) => {
         sessionLog.info(`Status icon changed: ${iconFilename} in ${workspaceId}`)
         this.broadcastStatusesChanged(workspaceId)
+      },
+      onLabelConfigChange: () => {
+        sessionLog.info(`Label config changed in ${workspaceId}`)
+        this.broadcastLabelsChanged(workspaceId)
       },
       onAppThemeChange: (theme) => {
         sessionLog.info(`App theme changed`)
@@ -401,6 +574,56 @@ export class SessionManager {
         const { loadWorkspaceSkills } = await import('@craft-agent/shared/skills')
         const skills = loadWorkspaceSkills(workspaceRootPath)
         this.broadcastSkillsChanged(skills)
+      },
+
+      // Session metadata changes (external edits to session.jsonl headers).
+      // Detects label/flag/name/todoState changes made by other instances or scripts.
+      // Compares with in-memory state and only emits events for actual differences.
+      onSessionMetadataChange: (sessionId, header) => {
+        const managed = this.sessions.get(sessionId)
+        if (!managed) return
+
+        // Skip if session is currently processing — in-memory state is authoritative during streaming
+        if (managed.isProcessing) return
+
+        let changed = false
+
+        // Labels
+        const oldLabels = JSON.stringify(managed.labels ?? [])
+        const newLabels = JSON.stringify(header.labels ?? [])
+        if (oldLabels !== newLabels) {
+          managed.labels = header.labels
+          this.sendEvent({ type: 'labels_changed', sessionId, labels: header.labels ?? [] }, managed.workspace.id)
+          changed = true
+        }
+
+        // Flagged
+        if ((managed.isFlagged ?? false) !== (header.isFlagged ?? false)) {
+          managed.isFlagged = header.isFlagged ?? false
+          this.sendEvent(
+            { type: header.isFlagged ? 'session_flagged' : 'session_unflagged', sessionId },
+            managed.workspace.id
+          )
+          changed = true
+        }
+
+        // Todo state
+        if (managed.todoState !== header.todoState) {
+          managed.todoState = header.todoState
+          this.sendEvent({ type: 'todo_state_changed', sessionId, todoState: header.todoState }, managed.workspace.id)
+          changed = true
+        }
+
+        // Name
+        if (managed.name !== header.name) {
+          managed.name = header.name
+          this.sendEvent({ type: 'name_changed', sessionId, name: header.name }, managed.workspace.id)
+          changed = true
+        }
+
+        if (changed) {
+          sessionLog.info(`External metadata change detected for session ${sessionId}`)
+        }
       },
     }
 
@@ -425,6 +648,15 @@ export class SessionManager {
     if (!this.windowManager) return
     sessionLog.info(`Broadcasting statuses changed for ${workspaceId}`)
     this.windowManager.broadcastToAll(IPC_CHANNELS.STATUSES_CHANGED, workspaceId)
+  }
+
+  /**
+   * Broadcast labels changed event to all windows
+   */
+  private broadcastLabelsChanged(workspaceId: string): void {
+    if (!this.windowManager) return
+    sessionLog.info(`Broadcasting labels changed for ${workspaceId}`)
+    this.windowManager.broadcastToAll(IPC_CHANNELS.LABELS_CHANGED, workspaceId)
   }
 
   /**
@@ -475,7 +707,9 @@ export class SessionManager {
     const enabledSources = allSources.filter(s =>
       enabledSlugs.includes(s.config.slug) && s.config.enabled && s.config.isAuthenticated
     )
-    const { mcpServers, apiServers } = await buildServersFromSources(enabledSources)
+    // Pass session path so large API responses can be saved to session folder
+    const sessionPath = getSessionStoragePath(workspaceRootPath, managed.id)
+    const { mcpServers, apiServers } = await buildServersFromSources(enabledSources, sessionPath)
     const intendedSlugs = enabledSources.map(s => s.config.slug)
     managed.agent.setSourceServers(mcpServers, apiServers, intendedSlugs)
 
@@ -483,29 +717,55 @@ export class SessionManager {
   }
 
   /**
-   * Reinitialize authentication environment variables
-   * Call this after onboarding or settings changes to pick up new credentials
+   * Reinitialize authentication environment variables.
+   * Call this after onboarding or settings changes to pick up new credentials.
+   *
+   * SECURITY NOTE: These env vars are propagated to the SDK subprocess via options.ts.
+   * Bun's automatic .env loading is disabled in the subprocess (--env-file=/dev/null)
+   * to prevent a user's project .env from injecting ANTHROPIC_API_KEY and overriding
+   * OAuth auth — Claude Code prioritizes API key over OAuth token when both are set.
+   * See: https://github.com/lukilabs/craft-agents-oss/issues/39
    */
   async reinitializeAuth(): Promise<void> {
     try {
       const authState = await getAuthState()
       const { billing } = authState
+      const customBaseUrl = getAnthropicBaseUrl()
 
-      sessionLog.info('Reinitializing auth with billing type:', billing.type)
+      sessionLog.info('Reinitializing auth with billing type:', billing.type, customBaseUrl ? `(custom base URL: ${customBaseUrl})` : '')
 
-      if (billing.type === 'oauth_token' && billing.claudeOAuthToken) {
-        // Use Claude Max subscription via OAuth token
+      // Priority 1: Custom base URL (Ollama, OpenRouter, etc.)
+      // Third-party endpoints require API key auth — OAuth tokens won't work
+      if (customBaseUrl) {
+        process.env.ANTHROPIC_BASE_URL = customBaseUrl
+        delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+
+        if (billing.apiKey) {
+          process.env.ANTHROPIC_API_KEY = billing.apiKey
+          sessionLog.info(`Using custom provider at ${customBaseUrl}`)
+        } else {
+          // Set a placeholder key for providers like Ollama that don't validate keys
+          process.env.ANTHROPIC_API_KEY = 'not-needed'
+          sessionLog.warn('Custom base URL configured but no API key set. Using placeholder key (works for Ollama, will fail for OpenRouter).')
+        }
+      } else if (billing.type === 'oauth_token' && billing.claudeOAuthToken) {
+        // Priority 2: Claude Max subscription via OAuth token (direct Anthropic only)
         process.env.CLAUDE_CODE_OAUTH_TOKEN = billing.claudeOAuthToken
         delete process.env.ANTHROPIC_API_KEY
+        delete process.env.ANTHROPIC_BASE_URL
         sessionLog.info('Set Claude Max OAuth Token')
       } else if (billing.apiKey) {
-        // Use API key (pay-as-you-go)
+        // Priority 3: API key with default Anthropic endpoint
         process.env.ANTHROPIC_API_KEY = billing.apiKey
         delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+        delete process.env.ANTHROPIC_BASE_URL
         sessionLog.info('Set Anthropic API Key')
       } else {
         sessionLog.error('No authentication configured!')
       }
+
+      // Reset cached summarization client so it picks up new credentials/base URL
+      resetSummarizationClient()
     } catch (error) {
       sessionLog.error('Failed to reinitialize auth:', error)
       throw error
@@ -518,7 +778,15 @@ export class SessionManager {
     // In development: use process.cwd()
     const basePath = app.isPackaged ? app.getAppPath() : process.cwd()
 
-    const cliPath = join(basePath, 'node_modules', '@anthropic-ai', 'claude-agent-sdk', 'cli.js')
+    // In monorepos, dependencies may be hoisted to the root node_modules
+    // Try local first, then check monorepo root (two levels up from apps/electron)
+    const sdkRelativePath = join('node_modules', '@anthropic-ai', 'claude-agent-sdk', 'cli.js')
+    let cliPath = join(basePath, sdkRelativePath)
+    if (!existsSync(cliPath) && !app.isPackaged) {
+      // Try monorepo root (../../node_modules from apps/electron)
+      const monorepoRoot = join(basePath, '..', '..')
+      cliPath = join(monorepoRoot, sdkRelativePath)
+    }
     if (!existsSync(cliPath)) {
       const error = `Claude Code SDK not found at ${cliPath}. The app package may be corrupted.`
       sessionLog.error(error)
@@ -529,22 +797,25 @@ export class SessionManager {
 
     // Set path to fetch interceptor for SDK subprocess
     // This interceptor captures API errors and adds metadata to MCP tool schemas
-    const interceptorPath = join(basePath, 'packages', 'shared', 'src', 'network-interceptor.ts')
+    // In monorepos, packages may be at the root level, not inside apps/electron
+    const interceptorRelativePath = join('packages', 'shared', 'src', 'network-interceptor.ts')
+    let interceptorPath = join(basePath, interceptorRelativePath)
+    if (!existsSync(interceptorPath) && !app.isPackaged) {
+      // Try monorepo root (../../packages from apps/electron)
+      const monorepoRoot = join(basePath, '..', '..')
+      interceptorPath = join(monorepoRoot, interceptorRelativePath)
+    }
     if (!existsSync(interceptorPath)) {
       const error = `Network interceptor not found at ${interceptorPath}. The app package may be corrupted.`
       sessionLog.error(error)
       throw new Error(error)
     }
-    // Skip interceptor on Windows development (--preload is bun-specific, not supported by node)
-    if (process.platform !== 'win32' || app.isPackaged) {
-      sessionLog.info('Setting interceptorPath:', interceptorPath)
-      setInterceptorPath(interceptorPath)
-    } else {
-      sessionLog.info('Skipping interceptor on Windows dev (node does not support --preload)')
-    }
+    // Set interceptor path (used for --preload flag with bun)
+    sessionLog.info('Setting interceptorPath:', interceptorPath)
+    setInterceptorPath(interceptorPath)
 
     // In packaged app: use bundled Bun binary
-    // In development: use system 'bun' command (or 'node' on Windows where bun may crash)
+    // In development: use system 'bun' command
     if (app.isPackaged) {
       // Use platform-specific binary name (bun.exe on Windows, bun on macOS/Linux)
       const bunBinary = process.platform === 'win32' ? 'bun.exe' : 'bun'
@@ -559,12 +830,8 @@ export class SessionManager {
       }
       sessionLog.info('Setting executable:', bunPath)
       setExecutable(bunPath)
-    } else if (process.platform === 'win32') {
-      // On Windows in development, use 'node' instead of 'bun' as bun may crash
-      // due to architecture emulation issues (e.g., x64 bun on ARM64 Windows)
-      sessionLog.info('Using node executable for Windows development')
-      setExecutable('node')
     }
+    // In development: use system 'bun' (works on Windows now, supports --preload for interceptor)
 
     // Set up authentication environment variables (critical for SDK to work)
     await this.reinitializeAuth()
@@ -597,21 +864,23 @@ export class SessionManager {
             agent: null,  // Lazy-load agent when needed
             messages: [],  // Lazy-load messages when needed
             isProcessing: false,
-            lastMessageAt: meta.lastUsedAt,
+            lastMessageAt: meta.lastMessageAt ?? meta.lastUsedAt,  // Fallback for sessions saved before lastMessageAt was persisted
             streamingText: '',
-            pendingTools: new Map(),
-            parentToolStack: [],
-            toolToParentMap: new Map(),
-            pendingTextParent: undefined,
+            processingGeneration: 0,
             name: meta.name,
             preview: meta.preview,
+            createdAt: meta.createdAt,
+            messageCount: meta.messageCount,
             isFlagged: meta.isFlagged ?? false,
             permissionMode: meta.permissionMode,
             sdkSessionId: meta.sdkSessionId,
-            tokenUsage: undefined,  // Loaded with messages
+            tokenUsage: meta.tokenUsage,  // From JSONL header (updated on save)
             todoState: meta.todoState,
-            lastReadMessageId: undefined,  // Loaded with messages
+            lastReadMessageId: meta.lastReadMessageId,  // Pre-computed for unread detection
+            lastFinalMessageId: meta.lastFinalMessageId,  // Pre-computed for unread detection
+            hasUnread: meta.hasUnread,  // Explicit unread flag for NEW badge state machine
             enabledSourceSlugs: undefined,  // Loaded with messages
+            labels: meta.labels,
             workingDirectory: meta.workingDirectory ?? wsDefaultWorkingDir,
             sdkCwd: meta.sdkCwd,
             model: meta.model,
@@ -641,9 +910,10 @@ export class SessionManager {
   // Persist a session to disk (async with debouncing)
   private persistSession(managed: ManagedSession): void {
     try {
-      // Filter out transient messages (error, status, system) that shouldn't be persisted
+      // Filter out transient status messages (progress indicators like "Compacting...")
+      // Error messages are now persisted with rich fields for diagnostics
       const persistableMessages = managed.messages.filter(m =>
-        m.role !== 'error' && m.role !== 'status' && m.role !== 'system'
+        m.role !== 'status'
       )
 
       const workspaceRootPath = managed.workspace.rootPath
@@ -653,12 +923,16 @@ export class SessionManager {
         name: managed.name,
         createdAt: managed.lastMessageAt,  // Approximate, will be overwritten if already exists
         lastUsedAt: Date.now(),
+        lastMessageAt: managed.lastMessageAt,  // Preserve actual message time (not persist time)
         sdkSessionId: managed.sdkSessionId,
         isFlagged: managed.isFlagged,
         permissionMode: managed.permissionMode,
         todoState: managed.todoState,
+        lastReadMessageId: managed.lastReadMessageId,  // For unread detection
+        hasUnread: managed.hasUnread,  // Explicit unread flag for NEW badge state machine
         enabledSourceSlugs: managed.enabledSourceSlugs,
         projectId: managed.projectId,
+        labels: managed.labels,
         workingDirectory: managed.workingDirectory,
         sdkCwd: managed.sdkCwd,
         thinkingLevel: managed.thinkingLevel,
@@ -979,13 +1253,19 @@ export class SessionManager {
         thinkingLevel: m.thinkingLevel,
         todoState: m.todoState,
         lastReadMessageId: m.lastReadMessageId,
+        lastFinalMessageId: m.lastFinalMessageId,
+        hasUnread: m.hasUnread,  // Explicit unread flag for NEW badge state machine
         workingDirectory: m.workingDirectory,
         model: m.model,
         enabledSourceSlugs: m.enabledSourceSlugs,
         projectId: m.projectId,
+        labels: m.labels,
         sharedUrl: m.sharedUrl,
         sharedId: m.sharedId,
         lastMessageRole: m.lastMessageRole,
+        tokenUsage: m.tokenUsage,
+        createdAt: m.createdAt,
+        messageCount: m.messageCount,
       }))
       .sort((a, b) => b.lastMessageAt - a.lastMessageAt)
   }
@@ -1016,11 +1296,14 @@ export class SessionManager {
       thinkingLevel: m.thinkingLevel,
       todoState: m.todoState,
       lastReadMessageId: m.lastReadMessageId,
+      lastFinalMessageId: m.lastFinalMessageId,
+      hasUnread: m.hasUnread,  // Explicit unread flag for NEW badge state machine
       workingDirectory: m.workingDirectory,
       model: m.model,
       sessionFolderPath: getSessionStoragePath(m.workspace.rootPath, m.id),
       enabledSourceSlugs: m.enabledSourceSlugs,
       projectId: m.projectId,
+      labels: m.labels,
       sharedUrl: m.sharedUrl,
       sharedId: m.sharedId,
       lastMessageRole: m.lastMessageRole,
@@ -1062,6 +1345,7 @@ export class SessionManager {
       managed.messages = (storedSession.messages || []).map(storedToMessage)
       managed.tokenUsage = storedSession.tokenUsage
       managed.lastReadMessageId = storedSession.lastReadMessageId
+      managed.hasUnread = storedSession.hasUnread  // Explicit unread flag for NEW badge state machine
       managed.enabledSourceSlugs = storedSession.enabledSourceSlugs
       managed.projectId = storedSession.projectId
       managed.sharedUrl = storedSession.sharedUrl
@@ -1102,6 +1386,8 @@ export class SessionManager {
     const userDefaultWorkingDir = wsConfig?.defaults?.workingDirectory || undefined
     // Get default thinking level from workspace config, fallback to global defaults
     const defaultThinkingLevel = wsConfig?.defaults?.thinkingLevel ?? globalDefaults.workspaceDefaults.thinkingLevel
+    // Get default model from workspace config (used when no session-specific model is set)
+    const defaultModel = wsConfig?.defaults?.model
 
     // Resolve working directory from options:
     // - 'user_default' or undefined: Use workspace's configured default
@@ -1117,7 +1403,7 @@ export class SessionManager {
     }
 
     // Use storage layer to create and persist the session
-    const storedSession = createStoredSession(workspaceRootPath, {
+    const storedSession = await createStoredSession(workspaceRootPath, {
       permissionMode: defaultPermissionMode,
       workingDirectory: resolvedWorkingDir,
       projectId: options?.projectId,
@@ -1129,17 +1415,15 @@ export class SessionManager {
       agent: null,  // Lazy-load agent on first message
       messages: [],
       isProcessing: false,
-      lastMessageAt: storedSession.lastUsedAt,
+      lastMessageAt: storedSession.lastMessageAt ?? storedSession.lastUsedAt,  // Fallback for sessions saved before lastMessageAt was persisted
       streamingText: '',
-      pendingTools: new Map(),
-      parentToolStack: [],
-      toolToParentMap: new Map(),
-      pendingTextParent: undefined,
+      processingGeneration: 0,
       isFlagged: false,
       permissionMode: defaultPermissionMode,
       workingDirectory: resolvedWorkingDir,
       sdkCwd: storedSession.sdkCwd,
-      model: storedSession.model,
+      // Session-specific model takes priority, then workspace default
+      model: storedSession.model || defaultModel,
       thinkingLevel: defaultThinkingLevel,
       messageQueue: [],
       backgroundShellCommands: new Map(),
@@ -1176,8 +1460,8 @@ export class SessionManager {
       const config = loadStoredConfig()
       managed.agent = new CraftAgent({
         workspace: managed.workspace,
-        // Session model takes priority, fallback to global config
-        model: managed.model || config?.model,
+        // Session model takes priority, fallback to global config, then resolve with customModel override
+        model: resolveModelId(managed.model || config?.model || DEFAULT_MODEL),
         // Initialize thinking level at construction to avoid race conditions
         thinkingLevel: managed.thinkingLevel,
         isHeadless: !AGENT_FLAGS.defaultModesEnabled,
@@ -1247,6 +1531,8 @@ export class SessionManager {
 
       // Note: Credential requests now flow through onAuthRequest (unified auth flow)
       // The legacy onCredentialRequest callback has been removed from CraftAgent
+      // Auth refresh for mid-session token expiry is handled by the error handler in sendMessage
+      // which destroys/recreates the agent to get fresh credentials
 
       // Set up mode change handlers
       managed.agent.onPermissionModeChange = (mode) => {
@@ -1294,12 +1580,6 @@ export class SessionManager {
             sessionLog.info(`Force-aborting after plan submission for session ${managed.id}`)
             managed.agent.forceAbort(AbortReason.PlanSubmitted)
             managed.isProcessing = false
-            managed.abortController = undefined
-
-            // Clear parent tool tracking (stale entries would corrupt future tracking)
-            managed.parentToolStack = []
-            managed.toolToParentMap.clear()
-            managed.pendingTextParent = undefined
 
             // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
             this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage }, managed.workspace.id)
@@ -1334,6 +1614,7 @@ export class SessionManager {
             authDescription: request.description,
             authHint: request.hint,
             authHeaderName: request.headerName,
+            authSourceUrl: request.sourceUrl,
           }),
         }
 
@@ -1349,12 +1630,6 @@ export class SessionManager {
           sessionLog.info(`Force-aborting after auth request for session ${managed.id}`)
           managed.agent.forceAbort(AbortReason.AuthRequest)
           managed.isProcessing = false
-          managed.abortController = undefined
-
-          // Clear parent tool tracking (stale entries would corrupt future tracking)
-          managed.parentToolStack = []
-          managed.toolToParentMap.clear()
-          managed.pendingTextParent = undefined
 
           // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
           this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage }, managed.workspace.id)
@@ -1421,7 +1696,9 @@ export class SessionManager {
 
         // Build server configs for all enabled sources
         const allEnabledSources = getSourcesBySlugs(workspaceRootPath, managed.enabledSourceSlugs || [])
-        const { mcpServers, apiServers, errors } = await buildServersFromSources(allEnabledSources)
+        // Pass session path so large API responses can be saved to session folder
+        const sessionPath = getSessionStoragePath(workspaceRootPath, managed.id)
+        const { mcpServers, apiServers, errors } = await buildServersFromSources(allEnabledSources, sessionPath)
 
         if (errors.length > 0) {
           sessionLog.warn(`Source build errors during auto-enable:`, errors)
@@ -1479,8 +1756,9 @@ export class SessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       managed.isFlagged = true
-      const workspaceRootPath = managed.workspace.rootPath
-      flagStoredSession(workspaceRootPath, sessionId)
+      // Persist in-memory state directly to avoid race with pending queue writes
+      this.persistSession(managed)
+      await this.flushSession(managed.id)
       // Notify all windows for this workspace
       this.sendEvent({ type: 'session_flagged', sessionId }, managed.workspace.id)
     }
@@ -1490,8 +1768,9 @@ export class SessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       managed.isFlagged = false
-      const workspaceRootPath = managed.workspace.rootPath
-      unflagStoredSession(workspaceRootPath, sessionId)
+      // Persist in-memory state directly to avoid race with pending queue writes
+      this.persistSession(managed)
+      await this.flushSession(managed.id)
       // Notify all windows for this workspace
       this.sendEvent({ type: 'session_unflagged', sessionId }, managed.workspace.id)
     }
@@ -1501,8 +1780,9 @@ export class SessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       managed.todoState = todoState
-      const workspaceRootPath = managed.workspace.rootPath
-      setStoredSessionTodoState(workspaceRootPath, sessionId, todoState)
+      // Persist in-memory state directly to avoid race with pending queue writes
+      this.persistSession(managed)
+      await this.flushSession(managed.id)
       // Notify all windows for this workspace
       this.sendEvent({ type: 'todo_state_changed', sessionId, todoState }, managed.workspace.id)
     }
@@ -1517,10 +1797,10 @@ export class SessionManager {
    * Called when user clicks "Accept & Compact" to persist the plan path
    * so execution can resume after compaction (even if page reloads).
    */
-  setPendingPlanExecution(sessionId: string, planPath: string): void {
+  async setPendingPlanExecution(sessionId: string, planPath: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
-      setStoredPendingPlanExecution(managed.workspace.rootPath, sessionId, planPath)
+      await setStoredPendingPlanExecution(managed.workspace.rootPath, sessionId, planPath)
       sessionLog.info(`Session ${sessionId}: set pending plan execution for ${planPath}`)
     }
   }
@@ -1530,10 +1810,10 @@ export class SessionManager {
    * Called when compaction_complete event fires - allows reload recovery
    * to know that compaction finished and plan can be executed.
    */
-  markCompactionComplete(sessionId: string): void {
+  async markCompactionComplete(sessionId: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
-      markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
+      await markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
       sessionLog.info(`Session ${sessionId}: compaction marked complete for pending plan`)
     }
   }
@@ -1543,10 +1823,10 @@ export class SessionManager {
    * Called after plan execution is triggered, on new user message,
    * or when the pending execution is no longer relevant.
    */
-  clearPendingPlanExecution(sessionId: string): void {
+  async clearPendingPlanExecution(sessionId: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
-      clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+      await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
       sessionLog.info(`Session ${sessionId}: cleared pending plan execution`)
     }
   }
@@ -1607,7 +1887,7 @@ export class SessionManager {
       managed.sharedUrl = data.url
       managed.sharedId = data.id
       const workspaceRootPath = managed.workspace.rootPath
-      updateSessionMetadata(workspaceRootPath, sessionId, {
+      await updateSessionMetadata(workspaceRootPath, sessionId, {
         sharedUrl: data.url,
         sharedId: data.id,
       })
@@ -1710,7 +1990,7 @@ export class SessionManager {
       delete managed.sharedUrl
       delete managed.sharedId
       const workspaceRootPath = managed.workspace.rootPath
-      updateSessionMetadata(workspaceRootPath, sessionId, {
+      await updateSessionMetadata(workspaceRootPath, sessionId, {
         sharedUrl: undefined,
         sharedId: undefined,
       })
@@ -1753,7 +2033,9 @@ export class SessionManager {
     // If agent exists, build and apply servers immediately
     if (managed.agent) {
       const sources = getSourcesBySlugs(workspaceRootPath, sourceSlugs)
-      const { mcpServers, apiServers, errors } = await buildServersFromSources(sources)
+      // Pass session path so large API responses can be saved to session folder
+      const sessionPath = getSessionStoragePath(workspaceRootPath, sessionId)
+      const { mcpServers, apiServers, errors } = await buildServersFromSources(sources, sessionPath)
       if (errors.length > 0) {
         sessionLog.warn(`Source build errors:`, errors)
       }
@@ -1849,36 +2131,81 @@ export class SessionManager {
   }
 
   /**
-   * Mark a session as read by setting lastReadMessageId to the last final assistant message
-   * Called when user navigates to a session
+   * Set which session the user is actively viewing.
+   * Called when user navigates to a session. Used to determine whether to mark
+   * new messages as unread - if user is viewing, don't mark unread.
    */
-  markSessionRead(sessionId: string): void {
-    const managed = this.sessions.get(sessionId)
-    if (managed && managed.messages.length > 0) {
-      const lastFinalId = this.getLastFinalAssistantMessageId(managed.messages)
-      if (!lastFinalId) return  // No final assistant message yet
-
-      // Only update if actually changed (avoid unnecessary persistence)
-      if (managed.lastReadMessageId !== lastFinalId) {
-        managed.lastReadMessageId = lastFinalId
-        // Persist to disk
-        const workspaceRootPath = managed.workspace.rootPath
-        updateSessionMetadata(workspaceRootPath, sessionId, { lastReadMessageId: lastFinalId })
+  setActiveViewingSession(sessionId: string | null, workspaceId: string): void {
+    if (sessionId) {
+      this.activeViewingSession.set(workspaceId, sessionId)
+      // When user starts viewing a session that's not processing, clear unread
+      const managed = this.sessions.get(sessionId)
+      if (managed && !managed.isProcessing && managed.hasUnread) {
+        this.markSessionRead(sessionId)
       }
+    } else {
+      this.activeViewingSession.delete(workspaceId)
     }
   }
 
   /**
-   * Mark a session as unread by clearing the lastReadMessageId
-   * Called when user manually marks a session as unread
+   * Check if a session is currently being viewed by the user
    */
-  markSessionUnread(sessionId: string): void {
+  private isSessionBeingViewed(sessionId: string, workspaceId: string): boolean {
+    return this.activeViewingSession.get(workspaceId) === sessionId
+  }
+
+  /**
+   * Mark a session as read by setting lastReadMessageId and clearing hasUnread.
+   * Called when user navigates to a session (and it's not processing).
+   */
+  async markSessionRead(sessionId: string): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return
+
+    // Only mark as read if not currently processing
+    // (user is viewing but we want to wait for processing to complete)
+    if (managed.isProcessing) return
+
+    let needsPersist = false
+    const updates: { lastReadMessageId?: string; hasUnread?: boolean } = {}
+
+    // Update lastReadMessageId for legacy/manual unread functionality
+    if (managed.messages.length > 0) {
+      const lastFinalId = this.getLastFinalAssistantMessageId(managed.messages)
+      if (lastFinalId && managed.lastReadMessageId !== lastFinalId) {
+        managed.lastReadMessageId = lastFinalId
+        updates.lastReadMessageId = lastFinalId
+        needsPersist = true
+      }
+    }
+
+    // Clear hasUnread flag (primary source of truth for NEW badge)
+    if (managed.hasUnread) {
+      managed.hasUnread = false
+      updates.hasUnread = false
+      needsPersist = true
+    }
+
+    // Persist changes
+    if (needsPersist) {
+      const workspaceRootPath = managed.workspace.rootPath
+      await updateSessionMetadata(workspaceRootPath, sessionId, updates)
+    }
+  }
+
+  /**
+   * Mark a session as unread by setting hasUnread flag.
+   * Called when user manually marks a session as unread via context menu.
+   */
+  async markSessionUnread(sessionId: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
+      managed.hasUnread = true
       managed.lastReadMessageId = undefined
-      // Persist to disk (undefined will clear the field)
+      // Persist to disk
       const workspaceRootPath = managed.workspace.rootPath
-      updateSessionMetadata(workspaceRootPath, sessionId, { lastReadMessageId: undefined })
+      await updateSessionMetadata(workspaceRootPath, sessionId, { hasUnread: true, lastReadMessageId: undefined })
     }
   }
 
@@ -1984,11 +2311,14 @@ export class SessionManager {
     if (managed) {
       managed.model = model ?? undefined
       // Persist to disk
-      updateSessionMetadata(managed.workspace.rootPath, sessionId, { model: model ?? undefined })
+      await updateSessionMetadata(managed.workspace.rootPath, sessionId, { model: model ?? undefined })
       // Update agent model if it already exists (takes effect on next query)
       if (managed.agent) {
-        const effectiveModel = model ?? loadStoredConfig()?.model ?? DEFAULT_MODEL
-        managed.agent.setModel(effectiveModel)
+        // Fallback chain: session model > workspace default > global config > DEFAULT_MODEL
+        const wsConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+        const effectiveModel = model ?? wsConfig?.defaults?.model ?? loadStoredConfig()?.model ?? DEFAULT_MODEL
+        const resolvedModel = resolveModelId(effectiveModel)
+        managed.agent.setModel(resolvedModel)
       }
       // Notify renderer of the model change
       this.sendEvent({ type: 'session_model_changed', sessionId, model }, managed.workspace.id)
@@ -2135,13 +2465,11 @@ export class SessionManager {
     // Get workspace slug before deleting
     const workspaceRootPath = managed.workspace.rootPath
 
-    // If processing is in progress, abort and wait for cleanup
-    if (managed.isProcessing && managed.abortController) {
-      managed.abortController.abort()
-      // TIMING NOTE: Brief wait for abort signal to propagate through async
-      // operations. AbortController.abort() is synchronous but in-flight
-      // promises may still be settling. 100ms is a generous buffer to prevent
-      // file corruption from overlapping writes during rapid delete operations.
+    // If processing is in progress, force-abort via Query.close() and wait for cleanup
+    if (managed.isProcessing && managed.agent) {
+      managed.agent.forceAbort(AbortReason.UserStop)
+      // Brief wait for the query to finish tearing down before we delete session files.
+      // Prevents file corruption from overlapping writes during rapid delete operations.
       await new Promise(resolve => setTimeout(resolve, 100))
     }
 
@@ -2176,7 +2504,7 @@ export class SessionManager {
     sessionLog.info(`Deleted session ${sessionId}`)
   }
 
-  async sendMessage(sessionId: string, message: string, attachments?: FileAttachment[], storedAttachments?: StoredAttachment[], options?: SendMessageOptions, existingMessageId?: string): Promise<void> {
+  async sendMessage(sessionId: string, message: string, attachments?: FileAttachment[], storedAttachments?: StoredAttachment[], options?: SendMessageOptions, existingMessageId?: string, _isAuthRetry?: boolean): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
@@ -2185,14 +2513,14 @@ export class SessionManager {
     // Clear any pending plan execution state when a new user message is sent.
     // This acts as a safety valve - if the user moves on, we don't want to
     // auto-execute an old plan later.
-    clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+    await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
 
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
 
-    // If currently processing, queue the message and interrupt
-    // The SDK will send a 'complete' event which triggers onProcessingStopped
-    // onProcessingStopped will then process the queued message
+    // If currently processing, queue the message and interrupt via forceAbort.
+    // The abort throws an AbortError (caught in the catch block) which calls
+    // onProcessingStopped → processNextQueuedMessage to drain the queue.
     if (managed.isProcessing) {
       sessionLog.info(`Session ${sessionId} is processing, queueing message and interrupting`)
 
@@ -2220,9 +2548,8 @@ export class SessionManager {
         status: 'queued'
       }, managed.workspace.id)
 
-      // Force-abort via SDK's AbortController - immediately stops processing
-      // This sends SIGTERM to subprocess (5s timeout, then SIGKILL)
-      // The for-await loop will throw AbortError, caught by our handler
+      // Force-abort via Query.close() - immediately stops processing.
+      // The for-await loop will complete, triggering onProcessingStopped → queue drain.
       managed.agent?.forceAbort(AbortReason.Redirect)
 
       return
@@ -2282,14 +2609,57 @@ export class SessionManager {
       }
     }
 
+    // Evaluate auto-label rules against the user message (common path for both
+    // fresh and queued messages). Scans regex patterns configured on labels,
+    // then merges any new matches into the session's label array.
+    try {
+      const labelTree = listLabels(managed.workspace.rootPath)
+      const autoMatches = evaluateAutoLabels(message, labelTree)
+
+      if (autoMatches.length > 0) {
+        const existingLabels = managed.labels ?? []
+        const newEntries = autoMatches
+          .map(m => `${m.labelId}::${m.value}`)
+          .filter(entry => !existingLabels.includes(entry))
+
+        if (newEntries.length > 0) {
+          managed.labels = [...existingLabels, ...newEntries]
+          this.persistSession(managed)
+          this.sendEvent({
+            type: 'labels_changed',
+            sessionId,
+            labels: managed.labels,
+          }, managed.workspace.id)
+        }
+      }
+    } catch (e) {
+      sessionLog.warn(`Auto-label evaluation failed for session ${sessionId}:`, e)
+    }
+
     managed.lastMessageAt = Date.now()
     managed.isProcessing = true
     managed.streamingText = ''
-    managed.abortController = new AbortController()
+    managed.processingGeneration++
 
-    // Capture the abort controller reference to detect if a new request supersedes this one
-    // This prevents the finally block from clobbering state when a follow-up message arrives
-    const myAbortController = managed.abortController
+    // Reset auth retry flag for this new message (allows one retry per message)
+    // IMPORTANT: Skip reset if this is an auth retry call - the flag is already true
+    // and resetting it would allow infinite retry loops
+    // Note: authRetryInProgress is NOT reset here - it's managed by the retry logic
+    if (!_isAuthRetry) {
+      managed.authRetryAttempted = false
+    }
+
+    // Store message/attachments for potential retry after auth refresh
+    // (SDK subprocess caches token at startup, so if it expires mid-session,
+    // we need to recreate the agent and retry the message)
+    managed.lastSentMessage = message
+    managed.lastSentAttachments = attachments
+    managed.lastSentStoredAttachments = storedAttachments
+    managed.lastSentOptions = options
+
+    // Capture the generation to detect if a new request supersedes this one.
+    // This prevents the finally block from clobbering state when a follow-up message arrives.
+    const myGeneration = managed.processingGeneration
 
     // Start perf span for entire sendMessage flow
     const sendSpan = perf.span('session.sendMessage', { sessionId })
@@ -2308,7 +2678,9 @@ export class SessionManager {
     if (managed.enabledSourceSlugs?.length) {
       // Always build server configs fresh (no caching - single source of truth)
       const sources = getSourcesBySlugs(workspaceRootPath, managed.enabledSourceSlugs)
-      const { mcpServers, apiServers, errors } = await buildServersFromSources(sources)
+      // Pass session path so large API responses can be saved to session folder
+      const sessionPath = getSessionStoragePath(workspaceRootPath, sessionId)
+      const { mcpServers, apiServers, errors } = await buildServersFromSources(sources, sessionPath)
       if (errors.length > 0) {
         sessionLog.warn(`Source build errors:`, errors)
       }
@@ -2345,11 +2717,10 @@ export class SessionManager {
         sessionLog.info('Attachments:', attachments.length)
       }
 
-      // Skills mentioned via @mentions are handled by the Agent SDK's Skill tool
-      // The @skill-name text remains in the message for the agent to process
-      if (options?.skillSlugs?.length) {
-        sessionLog.info(`Message contains ${options.skillSlugs.length} skill mention(s): ${options.skillSlugs.join(', ')}`)
-      }
+      // Skills mentioned via @mentions are handled by the SDK's Skill tool.
+      // The UI layer (extractBadges in mentions.ts) injects fully-qualified names
+      // in the rawText, and canUseTool in craft-agent.ts provides a fallback
+      // to qualify short names. No transformation needed here.
 
       sendSpan.mark('chat.starting')
       const chatIterator = agent.chat(message, attachments)
@@ -2388,6 +2759,15 @@ export class SessionManager {
         // Handle complete event - SDK always sends this (even after interrupt)
         // This is the central place where processing ends
         if (event.type === 'complete') {
+          // Skip normal completion handling if auth retry is in progress
+          // The retry will handle its own completion
+          if (managed.authRetryInProgress) {
+            sessionLog.info('Chat completed but auth retry is in progress, skipping normal completion handling')
+            sendSpan.mark('chat.complete.auth_retry_pending')
+            sendSpan.end()
+            return  // Exit function - retry will handle completion
+          }
+
           sessionLog.info('Chat completed via complete event')
 
           // Check if we got an assistant response in this turn
@@ -2429,7 +2809,7 @@ export class SessionManager {
       )
 
       if (isAbortError) {
-        // Extract abort reason (passed to AbortController.abort())
+        // Extract abort reason if available (safety net for unexpected abort propagation)
         const reason = (error as DOMException).cause as AbortReason | undefined
 
         sessionLog.info(`Chat aborted (reason: ${reason || 'unknown'})`)
@@ -2437,15 +2817,21 @@ export class SessionManager {
         sendSpan.setMetadata('abort_reason', reason || 'unknown')
         sendSpan.end()
 
-        // Only show "Interrupted" for user-initiated stops
-        // Plan submissions and redirects handle their own cleanup
-        if (reason === AbortReason.UserStop || reason === undefined) {
+        // Plan submissions handle their own cleanup (they set isProcessing = false directly).
+        // All other abort reasons route through onProcessingStopped for queue draining.
+        if (reason === AbortReason.UserStop || reason === AbortReason.Redirect || reason === undefined) {
           this.onProcessingStopped(sessionId, 'interrupted')
         }
       } else {
         sessionLog.error('Error in chat:', error)
         sessionLog.error('Error message:', error instanceof Error ? error.message : String(error))
         sessionLog.error('Error stack:', error instanceof Error ? error.stack : 'No stack')
+
+        // Report chat/SDK errors to Sentry for crash tracking
+        Sentry.captureException(error, {
+          tags: { errorSource: 'chat', sessionId },
+        })
+
         sendSpan.mark('chat.error')
         sendSpan.setMetadata('error', error instanceof Error ? error.message : String(error))
         sendSpan.end()
@@ -2461,7 +2847,7 @@ export class SessionManager {
       // Only handle cleanup for unexpected exits (loop break without complete event)
       // Normal completion returns early after calling onProcessingStopped
       // Errors are handled in catch block
-      if (managed.isProcessing && managed.abortController === myAbortController) {
+      if (managed.isProcessing && managed.processingGeneration === myGeneration) {
         sessionLog.info('Finally block cleanup - unexpected exit')
         sendSpan.mark('chat.unexpected_exit')
         sendSpan.end()
@@ -2481,7 +2867,7 @@ export class SessionManager {
     // Clear queue - user explicitly stopped, don't process queued messages
     managed.messageQueue = []
 
-    // Force-abort via AbortController - immediately stops processing
+    // Force-abort via Query.close() - immediately stops processing
     if (managed.agent) {
       managed.agent.forceAbort(AbortReason.UserStop)
     }
@@ -2489,12 +2875,6 @@ export class SessionManager {
     // Set state immediately - the SDK will send a complete event
     // but since we cleared isProcessing, onProcessingStopped won't be called again
     managed.isProcessing = false
-    managed.abortController = undefined
-
-    // Clear parent tool tracking (stale entries would corrupt future parent-child tracking)
-    managed.parentToolStack = []
-    managed.toolToParentMap.clear()
-    managed.pendingTextParent = undefined
 
     // Only show "Response interrupted" message when user explicitly clicked Stop
     // Silent mode is used when redirecting (sending new message while processing)
@@ -2526,10 +2906,10 @@ export class SessionManager {
    * @param sessionId - The session that stopped processing
    * @param reason - Why processing stopped ('complete' | 'interrupted' | 'error')
    */
-  private onProcessingStopped(
+  private async onProcessingStopped(
     sessionId: string,
     reason: 'complete' | 'interrupted' | 'error'
-  ): void {
+  ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) return
 
@@ -2537,21 +2917,42 @@ export class SessionManager {
 
     // 1. Cleanup state
     managed.isProcessing = false
-    managed.abortController = undefined
-    managed.parentToolStack = []
-    managed.toolToParentMap.clear()
-    managed.pendingTextParent = undefined
 
-    // 2. Check queue and process or complete
+    // 2. Handle unread state based on whether user is viewing this session
+    //    This is the explicit state machine for NEW badge:
+    //    - If user is viewing: mark as read (they saw it complete)
+    //    - If user is NOT viewing: mark as unread (they have new content)
+    const isViewing = this.isSessionBeingViewed(sessionId, managed.workspace.id)
+    const hasFinalMessage = this.getLastFinalAssistantMessageId(managed.messages) !== undefined
+
+    if (reason === 'complete' && hasFinalMessage) {
+      if (isViewing) {
+        // User is watching - mark as read immediately
+        await this.markSessionRead(sessionId)
+      } else {
+        // User is not watching - mark as unread for NEW badge
+        if (!managed.hasUnread) {
+          managed.hasUnread = true
+          await updateSessionMetadata(managed.workspace.rootPath, sessionId, { hasUnread: true })
+        }
+      }
+    }
+
+    // 3. Check queue and process or complete
     if (managed.messageQueue.length > 0) {
       // Has queued messages - process next
       this.processNextQueuedMessage(sessionId)
     } else {
-      // No queue - emit complete to UI (include tokenUsage for real-time updates)
-      this.sendEvent({ type: 'complete', sessionId, tokenUsage: managed.tokenUsage }, managed.workspace.id)
+      // No queue - emit complete to UI (include tokenUsage and hasUnread for state updates)
+      this.sendEvent({
+        type: 'complete',
+        sessionId,
+        tokenUsage: managed.tokenUsage,
+        hasUnread: managed.hasUnread,  // Propagate unread state to renderer
+      }, managed.workspace.id)
     }
 
-    // 3. Always persist
+    // 4. Always persist
     this.persistSession(managed)
   }
 
@@ -2590,6 +2991,10 @@ export class SessionManager {
         next.messageId
       ).catch(err => {
         sessionLog.error('Error processing queued message:', err)
+        // Report queued message failures to Sentry — these indicate SDK/chat pipeline errors
+        Sentry.captureException(err, {
+          tags: { errorSource: 'chat-queue', sessionId },
+        })
         this.sendEvent({
           type: 'error',
           sessionId,
@@ -2771,6 +3176,25 @@ To view this task's output:
   }
 
   /**
+   * Set labels for a session (additive tags, many-per-session).
+   * Labels are IDs referencing workspace labels/config.json.
+   */
+  setSessionLabels(sessionId: string, labels: string[]): void {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      managed.labels = labels
+
+      this.sendEvent({
+        type: 'labels_changed',
+        sessionId: managed.id,
+        labels: managed.labels,
+      }, managed.workspace.id)
+      // Persist to disk
+      this.persistSession(managed)
+    }
+  }
+
+  /**
    * Set the thinking level for a session ('off', 'think', 'max')
    * This is sticky and persisted across messages.
    */
@@ -2823,13 +3247,6 @@ To view this task's output:
 
     switch (event.type) {
       case 'text_delta':
-        // Capture parent on FIRST delta of a text block (when streamingText is empty)
-        // This ensures text gets the parent that existed when it started, not when it completed
-        if (managed.streamingText === '') {
-          managed.pendingTextParent = managed.parentToolStack.length > 0
-            ? managed.parentToolStack[managed.parentToolStack.length - 1]
-            : undefined
-        }
         managed.streamingText += event.text
         // Queue delta for batched sending (performance: reduces IPC from 50+/sec to ~20/sec)
         this.queueDelta(sessionId, workspaceId, event.text, event.turnId)
@@ -2839,9 +3256,10 @@ To view this task's output:
         // Flush any pending deltas before sending complete (ensures renderer has all content)
         this.flushDelta(sessionId, workspaceId)
 
-        // Use the parent that was active when text STARTED streaming (captured in text_delta)
-        // This prevents text from being nested under tools that started after the text began
-        const textParentToolUseId = event.isIntermediate ? managed.pendingTextParent : undefined
+        // SDK's parent_tool_use_id identifies the subagent context for this text
+        // (undefined = main agent / top-level, Task ID = inside subagent)
+        // Only intermediate text (text before a tool_use) gets a parent assignment
+        const textParentToolUseId = event.isIntermediate ? event.parentToolUseId : undefined
 
         const assistantMessage: Message = {
           id: generateMessageId(),
@@ -2854,11 +3272,11 @@ To view this task's output:
         }
         managed.messages.push(assistantMessage)
         managed.streamingText = ''
-        managed.pendingTextParent = undefined // Clear for next text block
 
-        // Update lastMessageRole for badge display (only for final messages)
+        // Update lastMessageRole and lastFinalMessageId for badge/unread display (only for final messages)
         if (!event.isIntermediate) {
           managed.lastMessageRole = 'assistant'
+          managed.lastFinalMessageId = assistantMessage.id
         }
 
         this.sendEvent({ type: 'text_complete', sessionId, text: event.text, isIntermediate: event.isIntermediate, turnId: event.turnId, parentToolUseId: textParentToolUseId }, workspaceId)
@@ -2869,11 +3287,17 @@ To view this task's output:
       }
 
       case 'tool_start': {
-        // Track tool_use_id -> toolName mapping for later use in tool_result
-        managed.pendingTools.set(event.toolUseId, event.toolName)
-
         // Format tool input paths to relative for better readability
         const formattedToolInput = formatToolInputPaths(event.input)
+
+        // Resolve tool display metadata (icon, displayName) for skills/sources
+        // Only resolve when we have input (second event for SDK dual-event pattern)
+        const workspaceRootPath = managed.workspace.rootPath
+        let toolDisplayMeta: ToolDisplayMeta | undefined
+        if (formattedToolInput && Object.keys(formattedToolInput).length > 0) {
+          const allSources = loadAllSources(workspaceRootPath)
+          toolDisplayMeta = resolveToolDisplayMeta(event.toolName, formattedToolInput, workspaceRootPath, allSources)
+        }
 
         // Check if a message with this toolUseId already exists FIRST
         // SDK sends two events per tool: first from stream_event (empty input),
@@ -2881,39 +3305,10 @@ To view this task's output:
         const existingStartMsg = managed.messages.find(m => m.toolUseId === event.toolUseId)
         const isDuplicateEvent = !!existingStartMsg
 
-        // Track parent-child relationships for nested tool calls
-        // Parent tools spawn child tools (e.g., Task runs Read, Grep, etc.)
-        // Include Task (subagents) and TaskOutput (retrieves task results)
-        const PARENT_TOOLS = ['Task', 'TaskOutput']
-        const isParentTool = PARENT_TOOLS.includes(event.toolName)
-
-        // Use parentToolUseId from the event - CraftAgent computes this correctly
-        // using the SDK's parent_tool_use_id (authoritative for parallel Tasks)
-        // Only fall back to stack heuristic if event doesn't provide parent
-        let parentToolUseId: string | undefined
-        if (isParentTool) {
-          // Parent tools don't have a parent themselves
-          parentToolUseId = undefined
-        } else if (event.parentToolUseId) {
-          // CraftAgent provided the correct parent from SDK - use it
-          parentToolUseId = event.parentToolUseId
-        } else if (managed.parentToolStack.length > 0) {
-          // Fallback: use stack heuristic for edge cases
-          parentToolUseId = managed.parentToolStack[managed.parentToolStack.length - 1]
-        }
-
-        // If this is a parent tool, push it onto the stack
-        // IMPORTANT: Only push on first event, not duplicate events (SDK sends two tool_start per tool)
-        if (isParentTool && !isDuplicateEvent) {
-          managed.parentToolStack.push(event.toolUseId)
-          sessionLog.info(`PARENT STACK PUSH: ${event.toolName} (${event.toolUseId}), stack=${JSON.stringify(managed.parentToolStack)}`)
-        }
-
-        // Store the parent assignment for this tool (only on first event)
-        // This allows us to look up the correct parent later even with concurrent parent tools
-        if (!isDuplicateEvent && parentToolUseId) {
-          managed.toolToParentMap.set(event.toolUseId, parentToolUseId)
-        }
+        // Use parentToolUseId directly from the event — CraftAgent resolves this
+        // from SDK's parent_tool_use_id (authoritative, handles parallel Tasks correctly).
+        // No stack or map needed; the event carries the correct parent from the start.
+        const parentToolUseId = event.parentToolUseId
 
         // Track if we need to send an event to the renderer
         // Send on: first occurrence OR when we have new input data to update
@@ -2933,6 +3328,10 @@ To view this task's output:
           if (parentToolUseId && !existingStartMsg.parentToolUseId) {
             existingStartMsg.parentToolUseId = parentToolUseId
           }
+          // Set toolDisplayMeta if not already set (has base64 icon for viewer)
+          if (toolDisplayMeta && !existingStartMsg.toolDisplayMeta) {
+            existingStartMsg.toolDisplayMeta = toolDisplayMeta
+          }
         } else {
           // Add tool message immediately (will be updated on tool_result)
           // This ensures tool calls are persisted even if they don't complete
@@ -2947,6 +3346,7 @@ To view this task's output:
             toolStatus: 'pending',
             toolIntent: event.intent,
             toolDisplayName: event.displayName,
+            toolDisplayMeta,  // Includes base64 icon for viewer compatibility
             turnId: event.turnId,
             parentToolUseId,
           }
@@ -2963,6 +3363,7 @@ To view this task's output:
             toolInput: formattedToolInput ?? {},
             toolIntent: event.intent,
             toolDisplayName: event.displayName,
+            toolDisplayMeta,  // Includes base64 icon for viewer compatibility
             turnId: event.turnId,
             parentToolUseId,
           }, workspaceId)
@@ -2971,39 +3372,8 @@ To view this task's output:
       }
 
       case 'tool_result': {
-        // AgentEvent tool_result only has toolUseId, look up the toolName
-        const toolName = managed.pendingTools.get(event.toolUseId) || 'unknown'
-        managed.pendingTools.delete(event.toolUseId)
-
-        // Parent tool names for defensive cleanup
-        const PARENT_TOOLS = ['Task', 'TaskOutput']
-
-        // Remove this tool from parent stack if it's there (parent tool completing)
-        const stackIndex = managed.parentToolStack.indexOf(event.toolUseId)
-        if (stackIndex !== -1) {
-          managed.parentToolStack.splice(stackIndex, 1)
-          sessionLog.info(`PARENT STACK POP: ${event.toolUseId}, stack=${JSON.stringify(managed.parentToolStack)}`)
-        } else if (PARENT_TOOLS.includes(toolName)) {
-          // Only log/warn for parent tools that SHOULD have been on the stack
-          // Non-parent tools (Read, Grep, Bash, etc.) are never on the stack - that's expected
-          sessionLog.warn(`PARENT STACK UNEXPECTED: ${toolName} (${event.toolUseId}) not found, stack=${JSON.stringify(managed.parentToolStack)}`)
-          // Defensive cleanup: try to find and remove by matching tool name in messages
-          const fallbackIdx = managed.parentToolStack.findIndex(id => {
-            const msg = managed.messages.find(m => m.toolUseId === id)
-            return msg?.toolName === toolName
-          })
-          if (fallbackIdx !== -1) {
-            const removedId = managed.parentToolStack.splice(fallbackIdx, 1)[0]
-            sessionLog.info(`PARENT STACK FALLBACK POP: ${removedId} (matched by toolName=${toolName}), stack=${JSON.stringify(managed.parentToolStack)}`)
-          }
-        }
-        // Non-parent tools: silent (expected behavior - they use toolToParentMap for hierarchy)
-
-        // Get the stored parent mapping before cleaning up (for fallback)
-        const storedParentId = managed.toolToParentMap.get(event.toolUseId)
-
-        // Clean up the tool-to-parent mapping for this tool
-        managed.toolToParentMap.delete(event.toolUseId)
+        // toolName comes directly from CraftAgent (resolved via ToolIndex)
+        const toolName = event.toolName || 'unknown'
 
         // Format absolute paths to relative paths for better readability
         const formattedResult = event.result ? formatPathsToRelative(event.result) : ''
@@ -3015,18 +3385,28 @@ To view this task's output:
 
         sessionLog.info(`RESULT MATCH: toolUseId=${event.toolUseId}, found=${!!existingToolMsg}, toolName=${existingToolMsg?.toolName || toolName}, wasComplete=${wasAlreadyComplete}`)
 
+        // parentToolUseId comes from CraftAgent (SDK-authoritative) or existing message
+        const parentToolUseId = existingToolMsg?.parentToolUseId || event.parentToolUseId
+
         if (existingToolMsg) {
           existingToolMsg.content = formattedResult
           existingToolMsg.toolResult = formattedResult
           existingToolMsg.toolStatus = 'completed'
           existingToolMsg.isError = event.isError
-          // If message doesn't have parent set, use stored mapping as fallback
-          // Note: SDK's event.parentToolUseId is for result matching, NOT hierarchy
-          if (!existingToolMsg.parentToolUseId && storedParentId) {
-            existingToolMsg.parentToolUseId = storedParentId
+          // If message doesn't have parent set, use event's parentToolUseId
+          if (!existingToolMsg.parentToolUseId && event.parentToolUseId) {
+            existingToolMsg.parentToolUseId = event.parentToolUseId
           }
         } else {
-          // Fallback: create new message if not found (shouldn't happen normally)
+          // No matching tool_start found — create message from result.
+          // This is normal for background subagent child tools where tool_result arrives
+          // without a prior tool_start. If tool_start arrives later, findToolMessage will
+          // locate this message by toolUseId and update it with input/intent/displayMeta.
+          sessionLog.info(`RESULT WITHOUT START: toolUseId=${event.toolUseId}, toolName=${toolName} (creating message from result)`)
+          const fallbackWorkspaceRootPath = managed.workspace.rootPath
+          const fallbackSources = loadAllSources(fallbackWorkspaceRootPath)
+          const fallbackToolDisplayMeta = resolveToolDisplayMeta(toolName, undefined, fallbackWorkspaceRootPath, fallbackSources)
+
           const toolMessage: Message = {
             id: generateMessageId(),
             role: 'tool',
@@ -3036,17 +3416,17 @@ To view this task's output:
             toolUseId: event.toolUseId,
             toolResult: formattedResult,
             toolStatus: 'completed',
-            parentToolUseId: storedParentId,
+            toolDisplayMeta: fallbackToolDisplayMeta,
+            parentToolUseId,
             isError: event.isError,
           }
           managed.messages.push(toolMessage)
         }
 
-        // Use stored parent mapping or existing message's parent
-        const finalParentToolUseId = existingToolMsg?.parentToolUseId || storedParentId
-
-        // Only send event to renderer if not already marked complete
-        if (!wasAlreadyComplete) {
+        // Send event to renderer if: (a) first completion, or (b) result content changed
+        // (e.g., safety net auto-completed with empty result, then real result arrived later)
+        const resultChanged = wasAlreadyComplete && formattedResult && existingToolMsg?.toolResult !== formattedResult
+        if (!wasAlreadyComplete || resultChanged) {
           this.sendEvent({
             type: 'tool_result',
             sessionId,
@@ -3054,33 +3434,39 @@ To view this task's output:
             toolName: toolName,
             result: formattedResult,
             turnId: event.turnId,
-            parentToolUseId: finalParentToolUseId,
+            parentToolUseId,
             isError: event.isError,
           }, workspaceId)
         }
 
+        // Safety net: when a parent Task completes, mark all its still-pending child tools as completed.
+        // This handles the case where child tool_result events never arrive (e.g., subagent internal tools
+        // whose results aren't surfaced through the parent stream).
+        const PARENT_TOOLS_FOR_CLEANUP = ['Task', 'TaskOutput']
+        if (PARENT_TOOLS_FOR_CLEANUP.includes(toolName)) {
+          const pendingChildren = managed.messages.filter(
+            m => m.parentToolUseId === event.toolUseId
+              && m.toolStatus !== 'completed'
+              && m.toolStatus !== 'error'
+          )
+          for (const child of pendingChildren) {
+            child.toolStatus = 'completed'
+            child.toolResult = child.toolResult || ''
+            sessionLog.info(`CHILD AUTO-COMPLETED: toolUseId=${child.toolUseId}, toolName=${child.toolName} (parent ${toolName} completed)`)
+            this.sendEvent({
+              type: 'tool_result',
+              sessionId,
+              toolUseId: child.toolUseId!,
+              toolName: child.toolName || 'unknown',
+              result: child.toolResult || '',
+              turnId: child.turnId,
+              parentToolUseId: event.toolUseId,
+            }, workspaceId)
+          }
+        }
+
         // Persist session after tool completes to prevent data loss on quit
         this.persistSession(managed)
-        break
-      }
-
-      case 'parent_update': {
-        // Deferred parent assignment: tool started without parent (multiple active Tasks),
-        // now we know the correct parent from the tool result
-        const existingToolMsg = managed.messages.find(m => m.toolUseId === event.toolUseId)
-        if (existingToolMsg) {
-          sessionLog.info(`PARENT UPDATE: ${event.toolUseId} -> parent ${event.parentToolUseId}`)
-          existingToolMsg.parentToolUseId = event.parentToolUseId
-          // Also update the toolToParentMap for consistency
-          managed.toolToParentMap.set(event.toolUseId, event.parentToolUseId)
-        }
-        // Send event to renderer so it can update UI grouping
-        this.sendEvent({
-          type: 'parent_update',
-          sessionId,
-          toolUseId: event.toolUseId,
-          parentToolUseId: event.parentToolUseId,
-        }, workspaceId)
         break
       }
 
@@ -3112,7 +3498,7 @@ To view this task's output:
           // This is done here (backend) rather than in the renderer so it's
           // not affected by CMD+R during compaction. The frontend reload
           // recovery will see awaitingCompaction=false and trigger execution.
-          markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
+          void markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
           sessionLog.info(`Session ${sessionId}: compaction complete, marked pending plan ready`)
 
           // Emit usage_update so the context count badge refreshes immediately
@@ -3139,7 +3525,7 @@ To view this task's output:
       }
 
       case 'error':
-        // Skip abort errors - these are expected when force-aborting via AbortController
+        // Skip abort errors - these are expected when force-aborting via Query.close()
         if (event.message.includes('aborted') || event.message.includes('AbortError')) {
           sessionLog.info('Skipping abort error event (expected during interrupt)')
           break
@@ -3156,7 +3542,7 @@ To view this task's output:
         break
 
       case 'typed_error':
-        // Skip abort errors - these are expected when force-aborting via AbortController
+        // Skip abort errors - these are expected when force-aborting via Query.close()
         const typedErrorMsg = event.error.message || event.error.title || ''
         if (typedErrorMsg.includes('aborted') || typedErrorMsg.includes('AbortError')) {
           sessionLog.info('Skipping typed abort error event (expected during interrupt)')
@@ -3164,11 +3550,114 @@ To view this task's output:
         }
         // Typed errors have structured information - send both formats for compatibility
         sessionLog.info('typed_error:', JSON.stringify(event.error, null, 2))
+
+        // Check for auth errors that can be retried by refreshing the token
+        // The SDK subprocess caches the token at startup, so if it expires mid-session,
+        // we get invalid_api_key errors. We can fix this by:
+        // 1. Refreshing the token (reinitializeAuth)
+        // 2. Destroying the agent (so it recreates with fresh token)
+        // 3. Retrying the message
+        const isAuthError = event.error.code === 'invalid_api_key' ||
+          event.error.code === 'expired_oauth_token'
+
+        if (isAuthError && !managed.authRetryAttempted && managed.lastSentMessage) {
+          sessionLog.info(`Auth error detected, attempting token refresh and retry for session ${sessionId}`)
+          managed.authRetryAttempted = true
+          managed.authRetryInProgress = true
+
+          // Trigger async retry (don't block the event processing)
+          // We use setImmediate to let the current event loop finish
+          setImmediate(async () => {
+            try {
+              // 1. Refresh auth (this will refresh the OAuth token if expired)
+              sessionLog.info(`[auth-retry] Refreshing auth for session ${sessionId}`)
+              await this.reinitializeAuth()
+
+              // 2. Destroy the agent so it gets recreated with fresh token
+              // The SDK subprocess has the old token cached in its env, so we must restart it
+              sessionLog.info(`[auth-retry] Destroying agent for session ${sessionId}`)
+              managed.agent = null
+
+              // 3. Retry the message
+              // Get the stored message/attachments before they're cleared
+              const retryMessage = managed.lastSentMessage
+              const retryAttachments = managed.lastSentAttachments
+              const retryStoredAttachments = managed.lastSentStoredAttachments
+              const retryOptions = managed.lastSentOptions
+
+              if (retryMessage) {
+                sessionLog.info(`[auth-retry] Retrying message for session ${sessionId}`)
+                // Clear processing state so sendMessage can start fresh
+                managed.isProcessing = false
+                // Note: Don't clear lastSentMessage yet - sendMessage will set new ones
+
+                // Remove the user message that was added for this failed attempt
+                // so we don't get duplicate messages when retrying
+                // Find and remove the last user message (the one we're retrying)
+                const lastUserMsgIndex = managed.messages.findLastIndex(m => m.role === 'user')
+                if (lastUserMsgIndex !== -1) {
+                  managed.messages.splice(lastUserMsgIndex, 1)
+                }
+
+                // Clear authRetryInProgress before calling sendMessage
+                // This allows the new request to be processed normally
+                managed.authRetryInProgress = false
+
+                await this.sendMessage(
+                  sessionId,
+                  retryMessage,
+                  retryAttachments,
+                  retryStoredAttachments,
+                  retryOptions,
+                  undefined,  // existingMessageId
+                  true        // _isAuthRetry - prevents infinite retry loop
+                )
+                sessionLog.info(`[auth-retry] Retry completed for session ${sessionId}`)
+              } else {
+                managed.authRetryInProgress = false
+              }
+            } catch (retryError) {
+              managed.authRetryInProgress = false
+              sessionLog.error(`[auth-retry] Failed to retry after auth refresh for session ${sessionId}:`, retryError)
+              // Report auth retry failures to Sentry — indicates credential/SDK issues
+              Sentry.captureException(retryError, {
+                tags: { errorSource: 'auth-retry', sessionId },
+              })
+              // Show the original error to the user since retry failed
+              const failedMessage: Message = {
+                id: generateMessageId(),
+                role: 'error',
+                content: 'Authentication failed. Please check your credentials.',
+                timestamp: Date.now(),
+                errorCode: event.error.code,
+              }
+              managed.messages.push(failedMessage)
+              this.sendEvent({
+                type: 'typed_error',
+                sessionId,
+                error: event.error
+              }, workspaceId)
+              this.onProcessingStopped(sessionId, 'error')
+            }
+          })
+
+          // Don't add error message or send to renderer - we're handling it via retry
+          break
+        }
+
+        // Build rich error message with all diagnostic fields for persistence and UI display
         const typedErrorMessage: Message = {
           id: generateMessageId(),
           role: 'error',
-          content: event.error.message || event.error.title || 'An error occurred',
-          timestamp: Date.now()
+          // Combine title and message for content display (handles undefined gracefully)
+          content: [event.error.title, event.error.message].filter(Boolean).join(': ') || 'An error occurred',
+          timestamp: Date.now(),
+          // Rich error fields for diagnostics and retry functionality
+          errorCode: event.error.code,
+          errorTitle: event.error.title,
+          errorDetails: event.error.details,
+          errorOriginal: event.error.originalError,
+          errorCanRetry: event.error.canRetry,
         }
         managed.messages.push(typedErrorMessage)
         // Send typed_error event with full structure for renderer to handle

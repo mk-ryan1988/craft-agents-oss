@@ -9,6 +9,7 @@ import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { SettingsSection, SettingsCard, SettingsRow } from '@/components/settings'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
+import { isMac } from '@/lib/platform'
 
 export const meta: DetailsPageMeta = {
   navigator: 'settings',
@@ -25,9 +26,6 @@ interface ShortcutSection {
   shortcuts: ShortcutItem[]
 }
 
-const isMac =
-  typeof navigator !== 'undefined' &&
-  navigator.platform.toUpperCase().indexOf('MAC') >= 0
 const cmdKey = isMac ? '⌘' : 'Ctrl'
 
 const sections: ShortcutSection[] = [
@@ -85,7 +83,7 @@ export default function ShortcutsPage() {
       <PanelHeader title="Shortcuts" />
       <div className="flex-1 min-h-0 mask-fade-y">
         <ScrollArea className="h-full">
-          <div className="px-5 py-7 max-w-3xl mx-auto space-y-6">
+          <div className="px-5 py-7 max-w-3xl mx-auto space-y-8">
             {sections.map((section) => (
               <SettingsSection key={section.title} title={section.title}>
                 <SettingsCard>

@@ -8,6 +8,7 @@ import {
   CircleAlert,
   ExternalLink,
   Info,
+  PenLine,
   X,
 } from "lucide-react"
 import { motion, AnimatePresence } from "motion/react"
@@ -24,14 +25,16 @@ import {
   parseGlobResult,
   extractOverlayData,
   CodePreviewOverlay,
-  DiffPreviewOverlay,
   MultiDiffPreviewOverlay,
   TerminalPreviewOverlay,
   GenericOverlay,
   JSONPreviewOverlay,
+  DocumentFormattedMarkdownOverlay,
+  detectLanguage,
   type ActivityItem,
   type OverlayData,
   type FileChange,
+  type DiffViewerSettings,
 } from "@craft-agent/ui"
 import { useFocusZone } from "@/hooks/keyboard"
 import { useTheme } from "@/hooks/useTheme"
@@ -44,7 +47,10 @@ import { ActiveOptionBadges } from "./ActiveOptionBadges"
 import { InputContainer, type StructuredInputState, type StructuredResponse, type PermissionResponse } from "./input"
 import type { RichTextInputHandle } from "@/components/ui/rich-text-input"
 import { useBackgroundTasks } from "@/hooks/useBackgroundTasks"
+import { useTurnCardExpansion } from "@/hooks/useTurnCardExpansion"
+import type { SessionMeta } from "@/atoms/sessions"
 import { CHAT_LAYOUT } from "@/config/layout"
+import { flattenLabels } from "@craft-agent/shared/labels"
 
 // ============================================================================
 // Overlay State Types
@@ -63,6 +69,8 @@ interface MarkdownOverlayState {
   type: 'markdown'
   content: string
   title: string
+  /** When true, show raw markdown source in code viewer instead of rendered preview */
+  forceCodeView?: boolean
 }
 
 /** Union of all overlay states, or null for no overlay */
@@ -119,6 +127,16 @@ interface ChatDisplayProps {
   // Skill selection (for @mentions)
   /** Available skills for @mention autocomplete */
   skills?: LoadedSkill[]
+  // Label selection (for #labels)
+  /** Available label configs (tree) for label menu and badge display */
+  labels?: import('@craft-agent/shared/labels').LabelConfig[]
+  /** Callback when labels change */
+  onLabelsChange?: (labels: string[]) => void
+  // State/status selection (for # menu and ActiveOptionBadges)
+  /** Available workflow states */
+  todoStates?: import('@/config/todo-states').TodoState[]
+  /** Callback when session state changes */
+  onTodoStateChange?: (stateId: string) => void
   /** Workspace ID for loading skill icons */
   workspaceId?: string
   // Working directory (per session)
@@ -340,6 +358,12 @@ export function ChatDisplay({
   onSourcesChange,
   // Skills (for @mentions)
   skills,
+  // Labels (for #labels)
+  labels,
+  onLabelsChange,
+  // States (for # menu and badge)
+  todoStates,
+  onTodoStateChange,
   workspaceId,
   // Working directory
   workingDirectory,
@@ -384,6 +408,18 @@ export function ChatDisplay({
     sessionId: session?.id ?? ''
   })
 
+  // TurnCard expansion state — persisted to localStorage across session switches
+  const {
+    expandedTurns,
+    toggleTurn,
+    expandedActivityGroups,
+    setExpandedActivityGroups,
+  } = useTurnCardExpansion(session?.id)
+
+  // Track which label should auto-open its value popover after being added via # menu.
+  // Set when a valued label is selected, cleared once the popover opens.
+  const [autoOpenLabelId, setAutoOpenLabelId] = useState<string | null>(null)
+
   // Focus textarea when session changes (tab switch) or zone gains focus via keyboard
   useEffect(() => {
     if (session) {
@@ -397,6 +433,41 @@ export function ChatDisplay({
 
   // Overlay state - controls which overlay is shown (if any)
   const [overlayState, setOverlayState] = useState<OverlayState>(null)
+
+  // Diff viewer settings - loaded from user preferences on mount, persisted on change
+  // These settings are stored in ~/.craft-agent/preferences.json (not localStorage)
+  const [diffViewerSettings, setDiffViewerSettings] = useState<Partial<DiffViewerSettings>>({})
+
+  // Load diff viewer settings from preferences on mount
+  useEffect(() => {
+    window.electronAPI.readPreferences().then(({ content }) => {
+      try {
+        const prefs = JSON.parse(content)
+        if (prefs.diffViewer) {
+          setDiffViewerSettings(prefs.diffViewer)
+        }
+      } catch {
+        // Ignore parse errors, use defaults
+      }
+    })
+  }, [])
+
+  // Persist diff viewer settings to preferences when changed
+  const handleDiffViewerSettingsChange = useCallback((settings: DiffViewerSettings) => {
+    setDiffViewerSettings(settings)
+    // Read current preferences, merge in new settings, write back
+    window.electronAPI.readPreferences().then(({ content }) => {
+      try {
+        const prefs = JSON.parse(content)
+        prefs.diffViewer = settings
+        prefs.updatedAt = Date.now()
+        window.electronAPI.writePreferences(JSON.stringify(prefs, null, 2))
+      } catch {
+        // If preferences malformed, create fresh with just diffViewer
+        window.electronAPI.writePreferences(JSON.stringify({ diffViewer: settings, updatedAt: Date.now() }, null, 2))
+      }
+    })
+  }, [])
 
   // Close overlay handler
   const handleCloseOverlay = useCallback(() => {
@@ -697,6 +768,10 @@ export function ChatDisplay({
                         intent={turn.intent}
                         isStreaming={turn.isStreaming}
                         isComplete={turn.isComplete}
+                        isExpanded={expandedTurns.has(turn.turnId)}
+                        onExpandedChange={(expanded) => toggleTurn(turn.turnId, expanded)}
+                        expandedActivityGroups={expandedActivityGroups}
+                        onExpandedActivityGroupsChange={setExpandedActivityGroups}
                         todos={turn.todos}
                         onOpenFile={onOpenFile}
                         onOpenUrl={onOpenUrl}
@@ -720,11 +795,12 @@ export function ChatDisplay({
                           }))
                         }}
                         onPopOut={(text) => {
-                          // Open response text in markdown overlay
+                          // Open raw markdown source in code viewer
                           setOverlayState({
                             type: 'markdown',
                             content: text,
                             title: 'Response Preview',
+                            forceCodeView: true,
                           })
                         }}
                         onOpenDetails={() => {
@@ -737,8 +813,18 @@ export function ChatDisplay({
                           })
                         }}
                         onOpenActivityDetails={(activity) => {
+                          // Write tool for .md/.txt → Document overlay (rendered markdown)
+                          // rather than multi-diff, since these are better viewed as formatted documents
+                          const isDocumentWrite = activity.toolName === 'Write' && (() => {
+                            const actInput = activity.toolInput as Record<string, unknown> | undefined
+                            const fp = (actInput?.file_path as string) || ''
+                            const ext = fp.split('.').pop()?.toLowerCase()
+                            return ext === 'md' || ext === 'txt'
+                          })()
+
                           // Edit/Write tool → Multi-file diff overlay (ungrouped, focused on this change)
-                          if (activity.toolName === 'Edit' || activity.toolName === 'Write') {
+                          // Exception: Write to .md/.txt files goes to document overlay instead
+                          if ((activity.toolName === 'Edit' || activity.toolName === 'Write') && !isDocumentWrite) {
                             // Collect all Edit/Write activities from this turn for context
                             const changes: FileChange[] = []
                             for (const a of turn.activities) {
@@ -855,6 +941,19 @@ export function ChatDisplay({
               sessionId={session.id}
               onKillTask={(taskId) => killTask(taskId, backgroundTasks.find(t => t.id === taskId)?.type ?? 'shell')}
               onInsertMessage={onInputChange}
+              sessionLabels={session.labels}
+              labels={labels}
+              onLabelsChange={onLabelsChange}
+              onRemoveLabel={(labelId) => {
+                // Remove label from session and persist (legacy fallback)
+                const newLabels = (session.labels || []).filter(id => id !== labelId)
+                onLabelsChange?.(newLabels)
+              }}
+              autoOpenLabelId={autoOpenLabelId}
+              onAutoOpenConsumed={() => setAutoOpenLabelId(null)}
+              todoStates={todoStates}
+              currentTodoState={session.todoState || 'todo'}
+              onTodoStateChange={onTodoStateChange}
             />
             <InputContainer
               disabled={isInputDisabled}
@@ -879,12 +978,29 @@ export function ChatDisplay({
               enabledSourceSlugs={session.enabledSourceSlugs}
               onSourcesChange={onSourcesChange}
               skills={skills}
+              labels={labels}
+              sessionLabels={session.labels}
+              onLabelAdd={(labelId) => {
+                // Add label to session (prevent duplicates) and persist
+                const current = session.labels || []
+                if (!current.includes(labelId)) {
+                  onLabelsChange?.([...current, labelId])
+                  // If the label has a valueType, auto-open its popover so the user
+                  // can set the value immediately without an extra click.
+                  const flat = flattenLabels(labels || [])
+                  const config = flat.find(l => l.id === labelId)
+                  if (config?.valueType) {
+                    setAutoOpenLabelId(labelId)
+                  }
+                }
+              }}
               workspaceId={workspaceId}
               workingDirectory={workingDirectory}
               onWorkingDirectoryChange={onWorkingDirectoryChange}
               sessionFolderPath={sessionFolderPath}
               isWorkingDirectoryLocked={isWorkingDirectoryLocked}
               sessionId={session.id}
+              currentTodoState={session.todoState || 'todo'}
               disableSend={disableSend}
               isEmptySession={session.messages.length === 0}
               contextStatus={{
@@ -915,25 +1031,10 @@ export function ChatDisplay({
           numLines={overlayData.numLines}
           theme={isDark ? 'dark' : 'light'}
           error={overlayData.error}
-          onOpenFile={onOpenFile}
         />
       )}
 
-      {/* Diff preview overlay (single Edit tool) */}
-      {overlayData?.type === 'diff' && (
-        <DiffPreviewOverlay
-          isOpen={!!overlayState}
-          onClose={handleCloseOverlay}
-          original={overlayData.original}
-          modified={overlayData.modified}
-          filePath={overlayData.filePath}
-          theme={isDark ? 'dark' : 'light'}
-          error={overlayData.error}
-          onOpenFile={onOpenFile}
-        />
-      )}
-
-      {/* Multi-diff preview overlay (multiple Edit/Write tools) */}
+      {/* Multi-diff preview overlay (Edit/Write tools) */}
       {overlayState?.type === 'multi-diff' && (
         <MultiDiffPreviewOverlay
           isOpen={true}
@@ -942,7 +1043,8 @@ export function ChatDisplay({
           consolidated={overlayState.consolidated}
           focusedChangeId={overlayState.focusedChangeId}
           theme={isDark ? 'dark' : 'light'}
-          onOpenFile={onOpenFile}
+          diffViewerSettings={diffViewerSettings}
+          onDiffViewerSettingsChange={handleDiffViewerSettingsChange}
         />
       )}
 
@@ -957,6 +1059,7 @@ export function ChatDisplay({
           toolType={overlayData.toolType}
           description={overlayData.description}
           theme={isDark ? 'dark' : 'light'}
+          error={overlayData.error}
         />
       )}
 
@@ -972,24 +1075,66 @@ export function ChatDisplay({
         />
       )}
 
-      {/* Markdown preview overlay (pop-out, turn details, generic activities) */}
-      {overlayState?.type === 'markdown' && (
-        <GenericOverlay
-          isOpen={true}
-          onClose={handleCloseOverlay}
-          content={overlayState.content}
-          title={overlayState.title}
-        />
-      )}
-
-      {/* Generic overlay for unknown tool types */}
-      {overlayData?.type === 'generic' && (
-        <GenericOverlay
+      {/* Document overlay (Write tool → .md/.txt files) — rendered markdown with tool badge */}
+      {overlayData?.type === 'document' && (
+        <DocumentFormattedMarkdownOverlay
           isOpen={!!overlayState}
           onClose={handleCloseOverlay}
           content={overlayData.content}
-          title={overlayData.title}
+          filePath={overlayData.filePath}
+          typeBadge={{ icon: PenLine, label: overlayData.toolName, variant: 'write' }}
+          onOpenUrl={onOpenUrl}
+          onOpenFile={onOpenFile}
+          error={overlayData.error}
         />
+      )}
+
+      {/* Markdown preview overlay (pop-out, turn details) */}
+      {/* forceCodeView: show raw markdown source in code viewer (used by "View as Markdown" button) */}
+      {/* otherwise: render formatted markdown (used by turn details, etc.) */}
+      {overlayState?.type === 'markdown' && (
+        overlayState.forceCodeView ? (
+          <CodePreviewOverlay
+            isOpen={true}
+            onClose={handleCloseOverlay}
+            content={overlayState.content}
+            filePath="response.md"
+            language="markdown"
+            mode="read"
+            theme={isDark ? 'dark' : 'light'}
+          />
+        ) : (
+          <DocumentFormattedMarkdownOverlay
+            isOpen={true}
+            onClose={handleCloseOverlay}
+            content={overlayState.content}
+            onOpenUrl={onOpenUrl}
+            onOpenFile={onOpenFile}
+          />
+        )
+      )}
+
+      {/* Generic overlay for unknown tool types - route markdown to fullscreen viewer */}
+      {overlayData?.type === 'generic' && (
+        detectLanguage(overlayData.content) === 'markdown' ? (
+          <DocumentFormattedMarkdownOverlay
+            isOpen={true}
+            onClose={handleCloseOverlay}
+            content={overlayData.content}
+            onOpenUrl={onOpenUrl}
+            onOpenFile={onOpenFile}
+            error={overlayData.error}
+          />
+        ) : (
+          <GenericOverlay
+            isOpen={!!overlayState}
+            onClose={handleCloseOverlay}
+            content={overlayData.content}
+            title={overlayData.title}
+            theme={isDark ? 'dark' : 'light'}
+            error={overlayData.error}
+          />
+        )
       )}
     </div>
   )
@@ -1029,8 +1174,7 @@ function ErrorMessage({ message }: { message: Message }) {
   const [detailsOpen, setDetailsOpen] = React.useState(false)
 
   return (
-    // ml-3 aligns with TurnCard header left padding for visual consistency
-    <div className="flex justify-start ml-3">
+    <div className="flex justify-start mt-4">
       {/* Subtle bg (3% opacity) + tinted shadow for softer error appearance */}
       <div
         className="max-w-[80%] shadow-tinted rounded-[8px] pl-5 pr-4 pt-2 pb-2.5 break-words"

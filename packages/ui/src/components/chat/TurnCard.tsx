@@ -1,5 +1,7 @@
 import * as React from 'react'
 import { useMemo, useEffect, useRef, useCallback, useState } from 'react'
+import type { ToolDisplayMeta } from '@craft-agent/core'
+import { normalizePath, pathStartsWith, stripPathPrefix } from '@craft-agent/core/utils'
 import { motion, AnimatePresence } from 'motion/react'
 import {
   ChevronRight,
@@ -23,6 +25,8 @@ import * as ReactDOM from 'react-dom'
 import { cn } from '../../lib/utils'
 import { Markdown } from '../markdown'
 import { Spinner } from '../ui/LoadingIndicator'
+import { parseDiffFromFile, type FileContents } from '@pierre/diffs'
+import { getDiffStats } from '../code-viewer'
 import { TurnCardActionsMenu } from './TurnCardActionsMenu'
 import { computeLastChildSet, groupActivitiesByParent, isActivityGroup, formatDuration, formatTokens, deriveTurnPhase, shouldShowThinkingIndicator, type ActivityGroup, type AssistantTurn } from './turn-utils'
 import { DocumentFormattedMarkdownOverlay } from '../overlay'
@@ -59,6 +63,45 @@ function stripMarkdown(text: string): string {
     // Collapse whitespace
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/**
+ * Compute diff stats for Edit/Write tool inputs.
+ * Uses @pierre/diffs for accurate line-by-line diff calculation.
+ *
+ * @param toolName - 'Edit' or 'Write'
+ * @param toolInput - The tool input containing old_string/new_string (Edit) or content (Write)
+ * @returns { additions, deletions } or null if not applicable
+ */
+function computeEditWriteDiffStats(
+  toolName: string | undefined,
+  toolInput: Record<string, unknown> | undefined
+): { additions: number; deletions: number } | null {
+  if (!toolInput) return null
+
+  if (toolName === 'Edit') {
+    const oldString = (toolInput.old_string as string) ?? ''
+    const newString = (toolInput.new_string as string) ?? ''
+    if (!oldString && !newString) return null
+
+    const oldFile: FileContents = { name: 'file', contents: oldString, lang: 'text' }
+    const newFile: FileContents = { name: 'file', contents: newString, lang: 'text' }
+    const fileDiff = parseDiffFromFile(oldFile, newFile)
+    return getDiffStats(fileDiff)
+  }
+
+  if (toolName === 'Write') {
+    const content = (toolInput.content as string) ?? ''
+    if (!content) return null
+
+    // For Write, everything is an addition (new file content)
+    const oldFile: FileContents = { name: 'file', contents: '', lang: 'text' }
+    const newFile: FileContents = { name: 'file', contents: content, lang: 'text' }
+    const fileDiff = parseDiffFromFile(oldFile, newFile)
+    return getDiffStats(fileDiff)
+  }
+
+  return null
 }
 
 // ============================================================================
@@ -118,6 +161,7 @@ export interface ActivityItem {
   content?: string
   intent?: string
   displayName?: string  // LLM-generated human-friendly tool name (for MCP tools)
+  toolDisplayMeta?: ToolDisplayMeta  // Embedded metadata with base64 icon (for viewer compatibility)
   timestamp: number
   error?: string
   // Parent-child nesting for Task subagents
@@ -139,6 +183,10 @@ export interface ResponseContent {
   /** Whether this response is a plan (renders with plan variant) */
   isPlan?: boolean
 }
+
+// ============================================================================
+// TurnCard Props
+// ============================================================================
 
 export interface TurnCardProps {
   /** Session ID for state persistence (optional in shared context) */
@@ -369,16 +417,16 @@ function stripSessionFolderPath(filePath: string, sessionFolderPath?: string): s
 
   // Get workspace path (parent of sessions folder)
   // sessionFolderPath: /path/workspaces/{uuid}/sessions/{sessionId}
-  const workspacePath = sessionFolderPath.replace(/\/sessions\/[^/]+$/, '')
+  const workspacePath = normalizePath(sessionFolderPath).replace(/\/sessions\/[^/]+$/, '')
 
   // Try session folder first (more specific)
-  if (filePath.startsWith(sessionFolderPath + '/')) {
-    return filePath.slice(sessionFolderPath.length + 1)
+  if (pathStartsWith(filePath, sessionFolderPath)) {
+    return stripPathPrefix(filePath, sessionFolderPath)
   }
 
   // Then try workspace folder
-  if (filePath.startsWith(workspacePath + '/')) {
-    return filePath.slice(workspacePath.length + 1)
+  if (pathStartsWith(filePath, workspacePath)) {
+    return stripPathPrefix(filePath, workspacePath)
   }
 
   return filePath
@@ -467,6 +515,54 @@ function formatToolInput(
   return parts.join(' ')
 }
 
+/**
+ * Format tool display using embedded toolDisplayMeta.
+ * toolDisplayMeta is set at storage time in the main process and includes:
+ * - displayName: Human-readable name
+ * - iconDataUrl: Base64-encoded icon (for skills/sources)
+ * - description: Brief description
+ * - category: 'skill' | 'source' | 'native' | 'mcp'
+ */
+function formatToolDisplay(
+  activity: ActivityItem
+): { name: string; icon?: string; description?: string } {
+  const { toolName, displayName, toolInput, toolDisplayMeta } = activity
+
+  // Primary: Use embedded toolDisplayMeta (works in both Electron and viewer)
+  if (toolDisplayMeta) {
+    // For MCP tools, append the tool slug to the source name
+    if (toolName?.startsWith('mcp__') && toolDisplayMeta.category === 'source') {
+      const parts = toolName.match(/^mcp__([^_]+)__(.+)$/)
+      if (parts) {
+        const toolSlug = parts[2]
+        return {
+          name: `${toolDisplayMeta.displayName}: ${toolSlug}`,
+          icon: toolDisplayMeta.iconDataUrl,
+          description: toolDisplayMeta.description,
+        }
+      }
+    }
+    return {
+      name: toolDisplayMeta.displayName,
+      icon: toolDisplayMeta.iconDataUrl,
+      description: toolDisplayMeta.description,
+    }
+  }
+
+  // Fallback for Skill tool without toolDisplayMeta (legacy sessions)
+  if (toolName === 'Skill' && toolInput?.skill) {
+    const skillId = String(toolInput.skill)
+    // Extract slug from qualified name (workspaceId:slug) for display
+    const colonIdx = skillId.indexOf(':')
+    const slug = colonIdx > 0 ? skillId.slice(colonIdx + 1) : skillId
+    return { name: slug }
+  }
+
+  // Final fallback: Use LLM-generated displayName or tool name
+  const name = displayName || (toolName ? getToolDisplayName(toolName) : 'Processing')
+  return { name }
+}
+
 /** Get the primary preview text for collapsed state */
 function getPreviewText(
   activities: ActivityItem[],
@@ -539,8 +635,44 @@ function getPreviewText(
 // Sub-Components
 // ============================================================================
 
-/** Status icon for an activity - Edit/Write tools show tool-specific icons when completed */
-function ActivityStatusIcon({ status, toolName }: { status: ActivityStatus; toolName?: string }) {
+/**
+ * Status icon for an activity.
+ * Supports custom icons from skill/source metadata when completed.
+ * Edit/Write tools show tool-specific icons; others show checkmark or custom icon.
+ */
+function ActivityStatusIcon({
+  status,
+  toolName,
+  customIcon
+}: {
+  status: ActivityStatus
+  toolName?: string
+  /** Custom icon from tool metadata - emoji or data URL (base64) */
+  customIcon?: string
+}) {
+  // For completed status with custom icon, use it instead of checkmark
+  if (status === 'completed' && customIcon) {
+    // Check if it's an emoji (short string, not a URL or data URL)
+    // Emojis can be 1-4+ characters due to ZWJ sequences
+    const isLikelyEmoji = customIcon.length <= 8 && !/^(https?:\/\/|data:)/.test(customIcon)
+    if (isLikelyEmoji) {
+      return (
+        <span className={cn(SIZE_CONFIG.iconSize, "shrink-0 flex items-center justify-center text-[10px] leading-none")}>
+          {customIcon}
+        </span>
+      )
+    }
+    // Otherwise it's a data URL (base64) or HTTP URL
+    return (
+      <img
+        src={customIcon}
+        alt=""
+        className={cn(SIZE_CONFIG.iconSize, "shrink-0 rounded-sm object-contain")}
+      />
+    )
+  }
+
+  // Default icon logic
   switch (status) {
     case 'pending':
       return <Circle className={cn(SIZE_CONFIG.iconSize, "shrink-0 text-muted-foreground/50")} />
@@ -681,16 +813,17 @@ function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath }
 
   // Tool activities - show with status icon
   // Format: "[DisplayName] · [Intent/Description] [Params]"
-  // - DisplayName: LLM-generated (activity.displayName) or fallback to formatted toolName
+  // - DisplayName: From toolDisplayMeta (embedded in message) or LLM-generated or fallback
   // - Intent: For MCP tools (activity.intent), for Bash (toolInput.description)
   // - Params: Remaining tool input summary
-  const toolName = activity.displayName
-    || (activity.toolName ? getToolDisplayName(activity.toolName) : null)
+  const toolDisplay = formatToolDisplay(activity)
+  const displayedName = toolDisplay.name
     || (activity.type === 'thinking' ? 'Thinking' : 'Processing')
 
   // Intent for MCP tools, description for Bash commands
   const intentOrDescription = activity.intent || (activity.toolInput?.description as string | undefined)
   const inputSummary = formatToolInput(activity.toolInput, activity.toolName, sessionFolderPath)
+  const diffStats = computeEditWriteDiffStats(activity.toolName, activity.toolInput)
   const isComplete = activity.status === 'completed' || activity.status === 'error'
   const isBackgrounded = activity.status === 'backgrounded'
 
@@ -713,9 +846,32 @@ function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath }
         )}
         onClick={onOpenDetails && isComplete ? onOpenDetails : undefined}
       >
-        <ActivityStatusIcon status={activity.status} toolName={activity.toolName} />
+        <ActivityStatusIcon status={activity.status} toolName={activity.toolName} customIcon={toolDisplay.icon} />
         {/* Tool name (always shown, darker) - underlined when clickable */}
-        <span className={cn("shrink-0", onOpenDetails && isComplete && "group-hover/row:underline")}>{toolName}</span>
+        <span className={cn("shrink-0", onOpenDetails && isComplete && "group-hover/row:underline")}>{displayedName}</span>
+        {/* Diff stats and filename for Edit/Write tools - shown right after tool name */}
+        {!isBackgrounded && diffStats && (
+          <span className="flex items-center gap-1.5 text-[10px] shrink-0">
+            {diffStats.deletions > 0 && (
+              <span
+                className="px-1.5 py-0.5 bg-[color-mix(in_oklab,var(--destructive)_5%,var(--background))] shadow-tinted rounded-[4px] text-destructive"
+                style={{ '--shadow-color': 'var(--destructive-rgb)' } as React.CSSProperties}
+              >{diffStats.deletions}</span>
+            )}
+            {diffStats.additions > 0 && (
+              <span
+                className="px-1.5 py-0.5 bg-[color-mix(in_oklab,var(--success)_5%,var(--background))] shadow-tinted rounded-[4px] text-success"
+                style={{ '--shadow-color': 'var(--success-rgb)' } as React.CSSProperties}
+              >{diffStats.additions}</span>
+            )}
+            {/* Filename badge */}
+            {activity.toolInput?.file_path && (
+              <span className="px-1.5 py-0.5 bg-background shadow-minimal rounded-[4px] text-[11px] text-foreground/70">
+                {(activity.toolInput.file_path as string).split('/').pop()}
+              </span>
+            )}
+          </span>
+        )}
         {/* Background task info (task/shell ID + elapsed time) */}
         {backgroundInfo && (
           <>

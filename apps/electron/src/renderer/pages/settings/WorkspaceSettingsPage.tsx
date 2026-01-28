@@ -49,6 +49,7 @@ export default function WorkspaceSettingsPage() {
   const onModelChange = appShellContext.onModelChange
   const activeWorkspaceId = appShellContext.activeWorkspaceId
   const onRefreshWorkspaces = appShellContext.onRefreshWorkspaces
+  const customModel = appShellContext.customModel
 
   // Workspace settings state
   const [wsName, setWsName] = useState('')
@@ -98,6 +99,10 @@ export default function WorkspaceSettingsPage() {
         for (const ext of ICON_EXTENSIONS) {
           try {
             const iconData = await window.electronAPI.readWorkspaceImage(activeWorkspaceId, `./icon.${ext}`)
+            // IPC returns null for missing files - continue to next extension
+            if (!iconData) {
+              continue
+            }
             // For SVG, wrap in data URL
             if (ext === 'svg' && !iconData.startsWith('data:')) {
               setWsIconUrl(`data:image/svg+xml;base64,${btoa(iconData)}`)
@@ -172,10 +177,12 @@ export default function WorkspaceSettingsPage() {
 
       // Reload the icon locally for settings display
       const iconData = await window.electronAPI.readWorkspaceImage(activeWorkspaceId, `./icon.${ext}`)
-      if (ext === 'svg' && !iconData.startsWith('data:')) {
-        setWsIconUrl(`data:image/svg+xml;base64,${btoa(iconData)}`)
-      } else {
-        setWsIconUrl(iconData)
+      if (iconData) {
+        if (ext === 'svg' && !iconData.startsWith('data:')) {
+          setWsIconUrl(`data:image/svg+xml;base64,${btoa(iconData)}`)
+        } else {
+          setWsIconUrl(iconData)
+        }
       }
 
       // Refresh workspaces to update sidebar icon
@@ -310,7 +317,7 @@ export default function WorkspaceSettingsPage() {
       <div className="flex-1 min-h-0 mask-fade-y">
         <ScrollArea className="h-full">
           <div className="px-5 py-7 max-w-3xl mx-auto">
-          <div className="space-y-6">
+          <div className="space-y-8">
             {/* Workspace Info */}
             <SettingsSection title="Workspace Info">
               <SettingsCard>
@@ -388,17 +395,27 @@ export default function WorkspaceSettingsPage() {
             {/* Model */}
             <SettingsSection title="Model">
               <SettingsCard>
-                <SettingsMenuSelectRow
-                  label="Default model"
-                  description="AI model for new chats"
-                  value={wsModel}
-                  onValueChange={handleModelChange}
-                  options={[
-                    { value: 'claude-opus-4-5-20251101', label: 'Opus 4.5', description: 'Most capable for complex work' },
-                    { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5', description: 'Best for everyday tasks' },
-                    { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', description: 'Fastest for quick answers' },
-                  ]}
-                />
+                {/* When a custom API connection is active, model is fixed — show info instead of selector */}
+                {customModel ? (
+                  <SettingsRow
+                    label="Default model"
+                    description="Set via API connection"
+                  >
+                    <span className="text-sm text-muted-foreground">{customModel}</span>
+                  </SettingsRow>
+                ) : (
+                  <SettingsMenuSelectRow
+                    label="Default model"
+                    description="AI model for new chats"
+                    value={wsModel}
+                    onValueChange={handleModelChange}
+                    options={[
+                      { value: 'claude-opus-4-5-20251101', label: 'Opus 4.5', description: 'Most capable for complex work' },
+                      { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5', description: 'Best for everyday tasks' },
+                      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', description: 'Fastest for quick answers' },
+                    ]}
+                  />
+                )}
                 <SettingsMenuSelectRow
                   label="Thinking level"
                   description="Reasoning depth for new chats"

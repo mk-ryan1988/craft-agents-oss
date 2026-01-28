@@ -40,6 +40,10 @@ const CONTENT_TYPE_TO_EXT: Record<string, string> = {
   'image/png': '.png',
   'image/jpeg': '.jpg',
   'image/jpg': '.jpg',
+  'image/x-icon': '.ico',
+  'image/vnd.microsoft.icon': '.ico',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
 };
 
 // ============================================================
@@ -122,11 +126,13 @@ function getExtensionFromUrl(url: string): string | null {
  * @param targetDir - Directory to save the icon to
  * @param iconUrl - URL to download the icon from
  * @param context - Context for debug logging
+ * @param filenameBase - Custom filename base (default: 'icon'). Saved as {filenameBase}.{ext}
  */
 export async function downloadIcon(
   targetDir: string,
   iconUrl: string,
-  context: string = 'Icon'
+  context: string = 'Icon',
+  filenameBase: string = 'icon'
 ): Promise<string | null> {
   debug(`[${context}] Downloading icon from:`, iconUrl);
 
@@ -159,7 +165,7 @@ export async function downloadIcon(
 
     // Read the response body and write to file
     const buffer = await response.arrayBuffer();
-    const iconPath = join(targetDir, `icon${ext}`);
+    const iconPath = join(targetDir, `${filenameBase}${ext}`);
     writeFileSync(iconPath, Buffer.from(buffer));
 
     debug(`[${context}] Icon downloaded successfully:`, iconPath);

@@ -1,3 +1,5 @@
+// Capture errors in the isolated preload context and forward to Sentry
+import '@sentry/electron/preload'
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS, type SessionEvent, type ElectronAPI, type FileAttachment, type AuthType } from '../shared/types'
 
@@ -60,6 +62,8 @@ const api: ElectronAPI = {
 
   // File operations
   readFile: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.READ_FILE, path),
+  readFileDataUrl: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.READ_FILE_DATA_URL, path),
+  readFileBinary: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.READ_FILE_BINARY, path) as Promise<Uint8Array>,
   openFileDialog: () => ipcRenderer.invoke(IPC_CHANNELS.OPEN_FILE_DIALOG),
   readFileAttachment: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.READ_FILE_ATTACHMENT, path),
   storeAttachment: (sessionId: string, attachment: FileAttachment) => ipcRenderer.invoke(IPC_CHANNELS.STORE_ATTACHMENT, sessionId, attachment),
@@ -86,9 +90,6 @@ const api: ElectronAPI = {
   }),
   getHomeDir: () => ipcRenderer.invoke(IPC_CHANNELS.GET_HOME_DIR),
   isDebugMode: () => ipcRenderer.invoke(IPC_CHANNELS.IS_DEBUG_MODE),
-
-  // Git
-  getGitBranch: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.GET_GIT_BRANCH, path),
 
   // Auto-update
   checkForUpdates: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CHECK),
@@ -155,21 +156,22 @@ const api: ElectronAPI = {
     authType?: AuthType
     workspace?: { name: string; iconUrl?: string; mcpUrl?: string }
     credential?: string
+    mcpCredentials?: { accessToken: string; clientId?: string }
+    anthropicBaseUrl?: string | null
+    customModel?: string | null
   }) => ipcRenderer.invoke(IPC_CHANNELS.ONBOARDING_SAVE_CONFIG, config),
-  // Claude OAuth
-  getExistingClaudeToken: () => ipcRenderer.invoke(IPC_CHANNELS.ONBOARDING_GET_EXISTING_CLAUDE_TOKEN),
-  isClaudeCliInstalled: () => ipcRenderer.invoke(IPC_CHANNELS.ONBOARDING_IS_CLAUDE_CLI_INSTALLED),
-  runClaudeSetupToken: () => ipcRenderer.invoke(IPC_CHANNELS.ONBOARDING_RUN_CLAUDE_SETUP_TOKEN),
-  // Native Claude OAuth (two-step flow)
+  // Claude OAuth (two-step flow)
   startClaudeOAuth: () => ipcRenderer.invoke(IPC_CHANNELS.ONBOARDING_START_CLAUDE_OAUTH),
   exchangeClaudeCode: (code: string) => ipcRenderer.invoke(IPC_CHANNELS.ONBOARDING_EXCHANGE_CLAUDE_CODE, code),
   hasClaudeOAuthState: () => ipcRenderer.invoke(IPC_CHANNELS.ONBOARDING_HAS_CLAUDE_OAUTH_STATE),
   clearClaudeOAuthState: () => ipcRenderer.invoke(IPC_CHANNELS.ONBOARDING_CLEAR_CLAUDE_OAUTH_STATE),
 
-  // Settings - Billing
-  getBillingMethod: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET_BILLING_METHOD),
-  updateBillingMethod: (authType: AuthType, credential?: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_UPDATE_BILLING_METHOD, authType, credential),
+  // Settings - API Setup
+  getApiSetup: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET_API_SETUP),
+  updateApiSetup: (authType: AuthType, credential?: string, anthropicBaseUrl?: string | null, customModel?: string | null) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_UPDATE_API_SETUP, authType, credential, anthropicBaseUrl, customModel),
+  testApiConnection: (apiKey: string, baseUrl?: string, modelName?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_TEST_API_CONNECTION, apiKey, baseUrl, modelName),
 
   // Settings - Model (global default)
   getModel: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET_MODEL),
@@ -188,6 +190,13 @@ const api: ElectronAPI = {
 
   // Folder dialog
   openFolderDialog: () => ipcRenderer.invoke(IPC_CHANNELS.OPEN_FOLDER_DIALOG),
+
+  // Filesystem search (for @ mention file selection)
+  searchFiles: (basePath: string, query: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FS_SEARCH, basePath, query),
+  // Debug: send renderer logs to main process log file
+  debugLog: (...args: unknown[]) =>
+    ipcRenderer.send(IPC_CHANNELS.DEBUG_LOG, ...args),
 
   // User Preferences
   readPreferences: () => ipcRenderer.invoke(IPC_CHANNELS.PREFERENCES_READ),
@@ -244,6 +253,8 @@ const api: ElectronAPI = {
   // Status management
   listStatuses: (workspaceId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.STATUSES_LIST, workspaceId),
+  reorderStatuses: (workspaceId: string, orderedIds: string[]) =>
+    ipcRenderer.invoke(IPC_CHANNELS.STATUSES_REORDER, workspaceId, orderedIds),
 
   // Generic workspace image loading/saving
   readWorkspaceImage: (workspaceId: string, relativePath: string) =>
@@ -320,6 +331,34 @@ const api: ElectronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.STATUSES_CHANGED, handler)
     }
   },
+
+  // Label management
+  listLabels: (workspaceId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.LABELS_LIST, workspaceId),
+  createLabel: (workspaceId: string, input: any) =>
+    ipcRenderer.invoke(IPC_CHANNELS.LABELS_CREATE, workspaceId, input),
+  deleteLabel: (workspaceId: string, labelId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.LABELS_DELETE, workspaceId, labelId),
+
+  // Labels change listener (live updates when labels config changes)
+  onLabelsChanged: (callback: (workspaceId: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, workspaceId: string) => {
+      callback(workspaceId)
+    }
+    ipcRenderer.on(IPC_CHANNELS.LABELS_CHANGED, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.LABELS_CHANGED, handler)
+    }
+  },
+
+  // Views (dynamic, expression-based filters stored in views.json)
+  listViews: (workspaceId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.VIEWS_LIST, workspaceId),
+  saveViews: (workspaceId: string, views: any[]) =>
+    ipcRenderer.invoke(IPC_CHANNELS.VIEWS_SAVE, workspaceId, views),
+
+  // Tool icon mappings (for Appearance settings page)
+  getToolIconMappings: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_ICONS_GET_MAPPINGS),
 
   // Theme (app-level only)
   getAppTheme: () => ipcRenderer.invoke(IPC_CHANNELS.THEME_GET_APP),
@@ -406,6 +445,29 @@ const api: ElectronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.NOTIFICATION_NAVIGATE, handler)
     }
   },
+  getGitBranch: (dirPath: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_GIT_BRANCH, dirPath),
+
+  // Git Bash (Windows)
+  checkGitBash: () => ipcRenderer.invoke(IPC_CHANNELS.GITBASH_CHECK),
+  browseForGitBash: () => ipcRenderer.invoke(IPC_CHANNELS.GITBASH_BROWSE),
+  setGitBashPath: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.GITBASH_SET_PATH, path),
+
+  // Menu actions (for unified Craft menu)
+  menuQuit: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_QUIT),
+  menuNewWindow: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_NEW_WINDOW),
+  menuMinimize: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_MINIMIZE),
+  menuMaximize: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_MAXIMIZE),
+  menuZoomIn: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_ZOOM_IN),
+  menuZoomOut: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_ZOOM_OUT),
+  menuZoomReset: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_ZOOM_RESET),
+  menuToggleDevTools: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_TOGGLE_DEVTOOLS),
+  menuUndo: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_UNDO),
+  menuRedo: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_REDO),
+  menuCut: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_CUT),
+  menuCopy: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_COPY),
+  menuPaste: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_PASTE),
+  menuSelectAll: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_SELECT_ALL),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)
