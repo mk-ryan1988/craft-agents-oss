@@ -863,8 +863,9 @@ function AppShellContent({
     enabledModes,
     todoStates,
     onSessionSourcesChange: handleSessionSourcesChange,
+    onSessionProjectChange: handleSessionProjectChange,
     rightSidebarButton: rightSidebarOpenButton,
-  }), [contextValue, handleDeleteSession, sources, skills, enabledModes, todoStates, handleSessionSourcesChange, rightSidebarOpenButton])
+  }), [contextValue, handleDeleteSession, sources, skills, enabledModes, todoStates, handleSessionSourcesChange, handleSessionProjectChange, rightSidebarOpenButton])
 
   // Persist expanded folders to localStorage
   React.useEffect(() => {

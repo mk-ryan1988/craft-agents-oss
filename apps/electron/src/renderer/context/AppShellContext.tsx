@@ -105,6 +105,9 @@ export interface AppShellContextType {
   // Source selection callback (per-session) - provided by AppShell component
   onSessionSourcesChange?: (sessionId: string, sourceSlugs: string[]) => void
 
+  // Project assignment callback (per-session) - provided by AppShell component
+  onSessionProjectChange?: (sessionId: string, projectId: string | null) => void
+
   // Chat input ref (for focusing)
   textareaRef?: React.RefObject<RichTextInputHandle>
 
