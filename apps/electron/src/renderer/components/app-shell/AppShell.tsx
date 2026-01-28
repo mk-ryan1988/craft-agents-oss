@@ -273,8 +273,9 @@ function AppShellContent({
 
   // Auto-hide right sidebar when navigating away from chat sessions
   React.useEffect(() => {
-    // Hide sidebar if not in chat view or no session selected
-    if (!isChatsNavigation(navState) || !navState.details) {
+    // Hide sidebar if not in chat/projects view or no session selected
+    const hasSession = (isChatsNavigation(navState) || isProjectsNavigation(navState)) && navState.details
+    if (!hasSession) {
       setSkipRightSidebarAnimation(true)
       setIsRightSidebarVisible(false)
       // Reset skip flag after state update
@@ -824,9 +825,10 @@ function AppShellContent({
     return onDeleteSession(sessionId, skipConfirmation)
   }, [session.selected, setSession, onDeleteSession])
 
-  // Right sidebar OPEN button (fades out when sidebar is open, hidden in focused mode or non-chat views)
+  // Right sidebar OPEN button (fades out when sidebar is open, hidden in focused mode or non-session views)
   const rightSidebarOpenButton = React.useMemo(() => {
-    if (isFocusedMode || !isChatsNavigation(navState) || !navState.details) return null
+    const hasSession = (isChatsNavigation(navState) || isProjectsNavigation(navState)) && navState.details
+    if (isFocusedMode || !hasSession) return null
 
     return (
       <motion.div
@@ -1896,7 +1898,11 @@ function AppShellContent({
                 >
                   <RightSidebar
                     panel={{ type: 'sessionMetadata' }}
-                    sessionId={isChatsNavigation(navState) && navState.details ? navState.details.sessionId : undefined}
+                    sessionId={
+                      (isChatsNavigation(navState) && navState.details?.sessionId) ||
+                      (isProjectsNavigation(navState) && navState.details?.sessionId) ||
+                      undefined
+                    }
                     closeButton={rightSidebarCloseButton}
                   />
                 </motion.div>
@@ -1929,7 +1935,11 @@ function AppShellContent({
                     <div className="h-full bg-foreground-2 overflow-hidden shadow-strong rounded-[12px]">
                       <RightSidebar
                         panel={{ type: 'sessionMetadata' }}
-                        sessionId={isChatsNavigation(navState) && navState.details ? navState.details.sessionId : undefined}
+                        sessionId={
+                          (isChatsNavigation(navState) && navState.details?.sessionId) ||
+                          (isProjectsNavigation(navState) && navState.details?.sessionId) ||
+                          undefined
+                        }
                         closeButton={rightSidebarCloseButton}
                       />
                     </div>
