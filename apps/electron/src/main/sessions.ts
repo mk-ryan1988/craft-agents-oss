@@ -623,6 +623,8 @@ export class SessionManager {
             // Shared viewer state - loaded from metadata for persistence across restarts
             sharedUrl: meta.sharedUrl,
             sharedId: meta.sharedId,
+            // Project assignment - loaded from metadata for persistence across restarts
+            projectId: meta.projectId,
           }
 
           this.sessions.set(meta.id, managed)
