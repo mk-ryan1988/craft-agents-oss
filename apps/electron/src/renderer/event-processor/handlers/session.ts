@@ -12,6 +12,7 @@ import type {
   ErrorEvent,
   TypedErrorEvent,
   SourcesChangedEvent,
+  ProjectChangedEvent,
   PermissionRequestEvent,
   CredentialRequestEvent,
   PlanSubmittedEvent,
@@ -488,6 +489,27 @@ export function handleSourcesChanged(
       session: {
         ...session,
         enabledSourceSlugs: event.enabledSourceSlugs,
+      },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
+/**
+ * Handle project_changed - update session's project assignment
+ */
+export function handleProjectChanged(
+  state: SessionState,
+  event: ProjectChangedEvent
+): ProcessResult {
+  const { session, streaming } = state
+
+  return {
+    state: {
+      session: {
+        ...session,
+        projectId: event.projectId,
       },
       streaming,
     },

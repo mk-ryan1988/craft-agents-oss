@@ -71,10 +71,11 @@ import { useFocusZone, useGlobalShortcuts } from "@/hooks/keyboard"
 import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
-import type { Session, Workspace, FileAttachment, PermissionRequest, TodoState, LoadedSource, LoadedSkill, PermissionMode, SourceFilter } from "../../../shared/types"
+import type { Session, Workspace, FileAttachment, PermissionRequest, TodoState, LoadedSource, LoadedSkill, LoadedProject, PermissionMode, SourceFilter } from "../../../shared/types"
 import { sessionMetaMapAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
+import { projectsAtom, initializeProjectsAtom, addProjectAtom, updateProjectAtom, removeProjectAtom } from "@/atoms/projects"
 import { type TodoStateId, statusConfigsToTodoStates } from "@/config/todo-states"
 import { useStatuses } from "@/hooks/useStatuses"
 import * as storage from "@/lib/local-storage"
@@ -388,6 +389,32 @@ function AppShellContent({
     return cleanup
   }, [])
 
+  // Projects state (workspace-scoped)
+  const [projects, setProjects] = React.useState<LoadedProject[]>([])
+  // Sync projects to atom for UI components
+  const initializeProjects = useSetAtom(initializeProjectsAtom)
+  React.useEffect(() => {
+    initializeProjects(projects)
+  }, [projects, initializeProjects])
+
+  // Load projects from backend on workspace change
+  React.useEffect(() => {
+    if (!activeWorkspaceId) return
+    window.electronAPI.listProjects(activeWorkspaceId).then((loaded) => {
+      setProjects(loaded || [])
+    }).catch(err => {
+      console.error('[AppShell] Failed to load projects:', err)
+    })
+  }, [activeWorkspaceId])
+
+  // Subscribe to live project updates
+  React.useEffect(() => {
+    const cleanup = window.electronAPI.onProjectsChanged?.((updatedProjects) => {
+      setProjects(updatedProjects || [])
+    })
+    return cleanup
+  }, [])
+
   // Handle session source selection changes
   const handleSessionSourcesChange = React.useCallback(async (sessionId: string, sourceSlugs: string[]) => {
     try {
@@ -395,6 +422,16 @@ function AppShellContent({
       // Session will emit a 'sources_changed' event that updates the session state
     } catch (err) {
       console.error('[Chat] Failed to set session sources:', err)
+    }
+  }, [])
+
+  // Handle session project assignment changes
+  const handleSessionProjectChange = React.useCallback(async (sessionId: string, projectId: string | null) => {
+    try {
+      await window.electronAPI.sessionCommand(sessionId, { type: 'setProject', projectId })
+      // Session will emit an event that updates the session state
+    } catch (err) {
+      console.error('[AppShell] Failed to set session project:', err)
     }
   }, [])
 
@@ -1602,6 +1639,8 @@ function AppShellContent({
                     setSearchQuery('')
                   }}
                   todoStates={todoStates}
+                  projects={projects}
+                  onProjectChange={handleSessionProjectChange}
                 />
               </>
             )}

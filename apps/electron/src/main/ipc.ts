@@ -346,6 +346,8 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
         return sessionManager.updateWorkingDirectory(sessionId, command.dir)
       case 'setSources':
         return sessionManager.setSessionSources(sessionId, command.sourceSlugs)
+      case 'setProject':
+        return sessionManager.setSessionProject(sessionId, command.projectId)
       case 'showInFinder': {
         const sessionPath = sessionManager.getSessionPath(sessionId)
         if (sessionPath) {

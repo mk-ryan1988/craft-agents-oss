@@ -357,6 +357,8 @@ export type SessionEvent =
   | { type: 'plan_submitted'; sessionId: string; message: CoreMessage }
   // Source events
   | { type: 'sources_changed'; sessionId: string; enabledSourceSlugs: string[] }
+  // Project events
+  | { type: 'project_changed'; sessionId: string; projectId?: string }
   // Background task/shell events
   | { type: 'task_backgrounded'; sessionId: string; toolUseId: string; taskId: string; intent?: string; turnId?: string }
   | { type: 'shell_backgrounded'; sessionId: string; toolUseId: string; shellId: string; intent?: string; command?: string; turnId?: string }
@@ -409,6 +411,7 @@ export type SessionCommand =
   | { type: 'setThinkingLevel'; level: ThinkingLevel }
   | { type: 'updateWorkingDirectory'; dir: string }
   | { type: 'setSources'; sourceSlugs: string[] }
+  | { type: 'setProject'; projectId: string | null }
   | { type: 'showInFinder' }
   | { type: 'copyPath' }
   | { type: 'shareToViewer' }

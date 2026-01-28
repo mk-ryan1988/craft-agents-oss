@@ -167,6 +167,12 @@ interface SessionItemProps {
   searchQuery?: string
   /** Dynamic todo states from workspace config */
   todoStates: TodoState[]
+  /** Available projects for assignment */
+  projects?: import('../../../shared/types').LoadedProject[]
+  /** Called when project assignment changes */
+  onProjectChange?: (projectId: string | null) => void
+  /** Called when user wants to create a new project */
+  onCreateProject?: () => void
 }
 
 /**
@@ -192,6 +198,9 @@ function SessionItem({
   permissionMode,
   searchQuery,
   todoStates,
+  projects,
+  onProjectChange,
+  onCreateProject,
 }: SessionItemProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [contextMenuOpen, setContextMenuOpen] = useState(false)
@@ -412,6 +421,8 @@ function SessionItem({
                     hasUnreadMessages={hasUnreadMessages(item)}
                     currentTodoState={currentTodoState}
                     todoStates={todoStates}
+                    currentProjectId={item.projectId}
+                    projects={projects}
                     onRename={() => onRenameClick(item.id, getSessionTitle(item))}
                     onFlag={() => onFlag?.(item.id)}
                     onUnflag={() => onUnflag?.(item.id)}
@@ -419,6 +430,8 @@ function SessionItem({
                     onTodoStateChange={(state) => onTodoStateChange(item.id, state)}
                     onOpenInNewWindow={onOpenInNewWindow}
                     onDelete={() => onDelete(item.id)}
+                    onProjectChange={onProjectChange}
+                    onCreateProject={onCreateProject}
                   />
                 </DropdownMenuProvider>
               </StyledDropdownMenuContent>
@@ -439,6 +452,8 @@ function SessionItem({
               hasUnreadMessages={hasUnreadMessages(item)}
               currentTodoState={currentTodoState}
               todoStates={todoStates}
+              currentProjectId={item.projectId}
+              projects={projects}
               onRename={() => onRenameClick(item.id, getSessionTitle(item))}
               onFlag={() => onFlag?.(item.id)}
               onUnflag={() => onUnflag?.(item.id)}
@@ -446,6 +461,8 @@ function SessionItem({
               onTodoStateChange={(state) => onTodoStateChange(item.id, state)}
               onOpenInNewWindow={onOpenInNewWindow}
               onDelete={() => onDelete(item.id)}
+              onProjectChange={onProjectChange}
+              onCreateProject={onCreateProject}
             />
           </ContextMenuProvider>
         </StyledContextMenuContent>
@@ -496,6 +513,12 @@ interface SessionListProps {
   onSearchClose?: () => void
   /** Dynamic todo states from workspace config */
   todoStates?: TodoState[]
+  /** Available projects for assignment */
+  projects?: import('../../../shared/types').LoadedProject[]
+  /** Called when session project assignment changes */
+  onProjectChange?: (sessionId: string, projectId: string | null) => void
+  /** Called when user wants to create a new project */
+  onCreateProject?: () => void
 }
 
 // Re-export TodoStateId for use by parent components
@@ -529,6 +552,9 @@ export function SessionList({
   onSearchChange,
   onSearchClose,
   todoStates = [],
+  projects,
+  onProjectChange,
+  onCreateProject,
 }: SessionListProps) {
   const [session] = useSession()
   const { navigate } = useNavigation()
@@ -854,6 +880,9 @@ export function SessionList({
                     permissionMode={sessionOptions?.get(item.id)?.permissionMode}
                     searchQuery={searchQuery}
                     todoStates={todoStates}
+                    projects={projects}
+                    onProjectChange={onProjectChange ? (projectId) => onProjectChange(item.id, projectId) : undefined}
+                    onCreateProject={onCreateProject}
                   />
                 )
               })}

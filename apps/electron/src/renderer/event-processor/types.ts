@@ -130,6 +130,15 @@ export interface SourcesChangedEvent {
 }
 
 /**
+ * Project changed event
+ */
+export interface ProjectChangedEvent {
+  type: 'project_changed'
+  sessionId: string
+  projectId?: string
+}
+
+/**
  * Plan submitted event
  */
 export interface PlanSubmittedEvent {
@@ -371,6 +380,7 @@ export type AgentEvent =
   | PermissionRequestEvent
   | CredentialRequestEvent
   | SourcesChangedEvent
+  | ProjectChangedEvent
   | PlanSubmittedEvent
   | StatusEvent
   | InfoEvent
