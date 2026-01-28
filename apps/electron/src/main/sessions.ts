@@ -1118,6 +1118,7 @@ export class SessionManager {
     const storedSession = createStoredSession(workspaceRootPath, {
       permissionMode: defaultPermissionMode,
       workingDirectory: resolvedWorkingDir,
+      projectId: options?.projectId,
     })
 
     const managed: ManagedSession = {
@@ -1141,6 +1142,7 @@ export class SessionManager {
       messageQueue: [],
       backgroundShellCommands: new Map(),
       messagesLoaded: true,  // New sessions don't need to load messages from disk
+      projectId: options?.projectId,
     }
 
     this.sessions.set(storedSession.id, managed)
@@ -1159,6 +1161,7 @@ export class SessionManager {
       model: managed.model,
       thinkingLevel: defaultThinkingLevel,
       sessionFolderPath: getSessionStoragePath(workspaceRootPath, storedSession.id),
+      projectId: options?.projectId,
     }
   }
 
