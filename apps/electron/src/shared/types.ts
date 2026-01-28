@@ -48,6 +48,10 @@ export type { LoadedSource, FolderSourceConfig, SourceConnectionStatus };
 import type { LoadedSkill, SkillMetadata } from '@craft-agent/shared/skills/types';
 export type { LoadedSkill, SkillMetadata };
 
+// Import project types
+import type { ProjectConfig, LoadedProject, CreateProjectInput, UpdateProjectInput } from '@craft-agent/shared/projects';
+export type { ProjectConfig, LoadedProject, CreateProjectInput, UpdateProjectInput };
+
 
 /**
  * File/directory entry in a skill folder
@@ -586,6 +590,15 @@ export const IPC_CHANNELS = {
   SKILLS_OPEN_FINDER: 'skills:openFinder',
   SKILLS_CHANGED: 'skills:changed',
 
+  // Projects (workspace-scoped)
+  PROJECTS_LIST: 'projects:list',
+  PROJECTS_GET: 'projects:get',
+  PROJECTS_CREATE: 'projects:create',
+  PROJECTS_UPDATE: 'projects:update',
+  PROJECTS_DELETE: 'projects:delete',
+  PROJECTS_FIND_FOR_PATH: 'projects:findForPath',
+  PROJECTS_CHANGED: 'projects:changed',
+
   // Status management (workspace-scoped)
   STATUSES_LIST: 'statuses:list',
   STATUSES_CHANGED: 'statuses:changed',  // Broadcast event
@@ -809,6 +822,15 @@ export interface ElectronAPI {
 
   // Skills change listener (live updates when skills are added/removed/modified)
   onSkillsChanged(callback: (skills: LoadedSkill[]) => void): () => void
+
+  // Projects (workspace-scoped)
+  listProjects(workspaceId: string): Promise<LoadedProject[]>
+  getProject(workspaceId: string, projectSlug: string): Promise<LoadedProject | null>
+  createProject(workspaceId: string, input: CreateProjectInput): Promise<ProjectConfig>
+  updateProject(workspaceId: string, projectSlug: string, updates: UpdateProjectInput): Promise<ProjectConfig | null>
+  deleteProject(workspaceId: string, projectSlug: string): Promise<boolean>
+  findProjectForPath(workspaceId: string, path: string): Promise<LoadedProject | null>
+  onProjectsChanged(callback: (projects: LoadedProject[]) => void): () => void
 
   // Statuses (workspace-scoped)
   listStatuses(workspaceId: string): Promise<import('@craft-agent/shared/statuses').StatusConfig[]>

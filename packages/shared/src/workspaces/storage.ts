@@ -85,6 +85,14 @@ export function getWorkspaceSkillsPath(rootPath: string): string {
   return join(rootPath, 'skills');
 }
 
+/**
+ * Get path to workspace projects directory
+ * @param rootPath - Absolute path to workspace root folder
+ */
+export function getWorkspaceProjectsPath(rootPath: string): string {
+  return join(rootPath, 'projects');
+}
+
 // ============================================================
 // Config Operations
 // ============================================================
@@ -183,10 +191,17 @@ export function loadWorkspace(rootPath: string): LoadedWorkspace | null {
     mkdirSync(skillsPath, { recursive: true });
   }
 
+  // Ensure projects directory exists (migration for existing workspaces)
+  const projectsPath = getWorkspaceProjectsPath(rootPath);
+  if (!existsSync(projectsPath)) {
+    mkdirSync(projectsPath, { recursive: true });
+  }
+
   return {
     config,
     sourceSlugs: listSubdirNames(getWorkspaceSourcesPath(rootPath)),
     sessionCount: countSubdirs(getWorkspaceSessionsPath(rootPath)),
+    projectCount: countSubdirs(getWorkspaceProjectsPath(rootPath)),
   };
 }
 
@@ -203,6 +218,7 @@ export function getWorkspaceSummary(rootPath: string): WorkspaceSummary | null {
     name: config.name,
     sourceCount: countSubdirs(getWorkspaceSourcesPath(rootPath)),
     sessionCount: countSubdirs(getWorkspaceSessionsPath(rootPath)),
+    projectCount: countSubdirs(getWorkspaceProjectsPath(rootPath)),
     createdAt: config.createdAt,
     updatedAt: config.updatedAt,
   };
@@ -273,6 +289,7 @@ export function createWorkspaceAtPath(
   mkdirSync(getWorkspaceSourcesPath(rootPath), { recursive: true });
   mkdirSync(getWorkspaceSessionsPath(rootPath), { recursive: true });
   mkdirSync(getWorkspaceSkillsPath(rootPath), { recursive: true });
+  mkdirSync(getWorkspaceProjectsPath(rootPath), { recursive: true });
 
   // Save config
   saveWorkspaceConfig(rootPath, config);

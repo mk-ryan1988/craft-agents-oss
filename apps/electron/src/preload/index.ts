@@ -285,6 +285,31 @@ const api: ElectronAPI = {
     }
   },
 
+  // Projects
+  listProjects: (workspaceId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROJECTS_LIST, workspaceId),
+  getProject: (workspaceId: string, projectSlug: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROJECTS_GET, workspaceId, projectSlug),
+  createProject: (workspaceId: string, input: import('@craft-agent/shared/projects').CreateProjectInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROJECTS_CREATE, workspaceId, input),
+  updateProject: (workspaceId: string, projectSlug: string, updates: import('@craft-agent/shared/projects').UpdateProjectInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROJECTS_UPDATE, workspaceId, projectSlug, updates),
+  deleteProject: (workspaceId: string, projectSlug: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROJECTS_DELETE, workspaceId, projectSlug),
+  findProjectForPath: (workspaceId: string, path: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROJECTS_FIND_FOR_PATH, workspaceId, path),
+
+  // Projects change listener (live updates when projects are added/removed/modified)
+  onProjectsChanged: (callback: (projects: import('@craft-agent/shared/projects').LoadedProject[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, projects: import('@craft-agent/shared/projects').LoadedProject[]) => {
+      callback(projects)
+    }
+    ipcRenderer.on(IPC_CHANNELS.PROJECTS_CHANGED, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.PROJECTS_CHANGED, handler)
+    }
+  },
+
   // Statuses change listener (live updates when statuses config or icon files change)
   onStatusesChanged: (callback: (workspaceId: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, workspaceId: string) => {

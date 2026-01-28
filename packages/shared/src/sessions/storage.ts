@@ -143,6 +143,7 @@ export function createSession(
     permissionMode?: SessionConfig['permissionMode'];
     enabledSourceSlugs?: string[];
     model?: string;
+    projectId?: string;
   }
 ): SessionConfig {
   ensureSessionsDir(workspaceRootPath);
@@ -169,6 +170,7 @@ export function createSession(
     permissionMode: options?.permissionMode,
     enabledSourceSlugs: options?.enabledSourceSlugs,
     model: options?.model,
+    projectId: options?.projectId,
   };
 
   // Save empty session
@@ -368,6 +370,7 @@ function headerToMetadata(header: SessionHeader, workspaceRootPath: string): Ses
       lastMessageRole: header.lastMessageRole,
       workingDirectory: workingDir,
       sdkCwd,
+      projectId: header.projectId,
       model: header.model,
       // Shared viewer state - must be included for persistence across app restarts
       sharedUrl: header.sharedUrl,
@@ -474,6 +477,7 @@ export function updateSessionMetadata(
     | 'sharedUrl'
     | 'sharedId'
     | 'model'
+    | 'projectId'
   >>
 ): void {
   const session = loadSession(workspaceRootPath, sessionId);
@@ -489,6 +493,7 @@ export function updateSessionMetadata(
   if ('sharedUrl' in updates) session.sharedUrl = updates.sharedUrl;
   if ('sharedId' in updates) session.sharedId = updates.sharedId;
   if (updates.model !== undefined) session.model = updates.model;
+  if (updates.projectId !== undefined) session.projectId = updates.projectId;
 
   saveSession(session);
 }
@@ -617,6 +622,23 @@ export function listInboxSessions(workspaceRootPath: string): SessionMetadata[] 
     const category = getStatusCategory(workspaceRootPath, s.todoState || 'todo');
     return category === 'open';
   });
+}
+
+/**
+ * List sessions for a specific project
+ */
+export function listSessionsByProject(
+  workspaceRootPath: string,
+  projectId: string
+): SessionMetadata[] {
+  return listSessions(workspaceRootPath).filter(s => s.projectId === projectId);
+}
+
+/**
+ * List sessions that don't belong to any project
+ */
+export function listUnassignedSessions(workspaceRootPath: string): SessionMetadata[] {
+  return listSessions(workspaceRootPath).filter(s => !s.projectId);
 }
 
 // ============================================================

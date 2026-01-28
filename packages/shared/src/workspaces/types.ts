@@ -1,14 +1,15 @@
 /**
  * Workspace Types
  *
- * Workspaces are the top-level organizational unit. Everything (sources, sessions)
- * is scoped to a workspace.
+ * Workspaces are the top-level organizational unit. Everything (sources, sessions,
+ * projects) is scoped to a workspace.
  *
  * Directory structure:
  * ~/.craft-agent/workspaces/{slug}/
  *   ├── config.json      - Workspace settings
  *   ├── sources/         - Data sources (MCP, API, local)
- *   └── sessions/        - Conversation sessions
+ *   ├── sessions/        - Conversation sessions
+ *   └── projects/        - Git-repo-anchored projects
  */
 
 import type { PermissionMode } from '../agent/mode-manager.ts';
@@ -73,6 +74,7 @@ export interface LoadedWorkspace {
   config: WorkspaceConfig;
   sourceSlugs: string[]; // Available source slugs (not fully loaded to save memory)
   sessionCount: number; // Number of sessions
+  projectCount: number; // Number of projects
 }
 
 /**
@@ -83,6 +85,7 @@ export interface WorkspaceSummary {
   name: string;
   sourceCount: number;
   sessionCount: number;
+  projectCount: number;
   createdAt: number;
   updatedAt: number;
 }
