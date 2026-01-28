@@ -434,14 +434,26 @@ function AppShellContent({
   }, [])
 
   // Handle session project assignment changes
+  // Also updates working directory to match project's rootPath when assigning to a project
   const handleSessionProjectChange = React.useCallback(async (sessionId: string, projectId: string | null) => {
     try {
       await window.electronAPI.sessionCommand(sessionId, { type: 'setProject', projectId })
-      // Session will emit an event that updates the session state
+
+      // When assigning to a project, also update working directory to project's root path
+      if (projectId) {
+        const project = projects.find(p => p.config.id === projectId)
+        if (project?.config.rootPath) {
+          await window.electronAPI.sessionCommand(sessionId, {
+            type: 'updateWorkingDirectory',
+            dir: project.config.rootPath,
+          })
+        }
+      }
+      // Session will emit events that update the session state
     } catch (err) {
       console.error('[AppShell] Failed to set session project:', err)
     }
-  }, [])
+  }, [projects])
 
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId)
 
@@ -993,6 +1005,7 @@ function AppShellContent({
   // Create a new chat and select it
   // If forceUnassigned is true, creates an unassigned chat regardless of context
   // Otherwise, if in a specific project context, assigns the chat to that project
+  // and sets the working directory to the project's root path
   const handleNewChat = useCallback(async (forceUnassigned: boolean = false) => {
     if (!activeWorkspace) return
 
@@ -1003,7 +1016,15 @@ function AppShellContent({
 
     // Create session with project assignment if in project context and not forcing unassigned
     const projectId = (!forceUnassigned && inSpecificProject) ? projectFilter.projectId : undefined
-    const newSession = await onCreateSession(activeWorkspace.id, projectId ? { projectId } : undefined)
+
+    // If creating in a project, also set working directory to project's root path
+    const project = projectId ? projects.find(p => p.config.id === projectId) : undefined
+    const createOptions = projectId ? {
+      projectId,
+      workingDirectory: project?.config.rootPath,
+    } : undefined
+
+    const newSession = await onCreateSession(activeWorkspace.id, createOptions)
 
     // Navigate to the new session - stay in project context if we created a project chat
     if (projectId) {
@@ -1011,7 +1032,7 @@ function AppShellContent({
     } else {
       navigate(routes.view.allChats(newSession.id))
     }
-  }, [activeWorkspace, onCreateSession, navState, projectFilter, navigate])
+  }, [activeWorkspace, onCreateSession, navState, projectFilter, navigate, projects])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {

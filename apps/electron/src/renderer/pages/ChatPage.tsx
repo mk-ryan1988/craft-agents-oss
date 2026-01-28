@@ -370,6 +370,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
                 onSourcesChange={(slugs) => onSessionSourcesChange?.(sessionId, slugs)}
                 workingDirectory={sessionMeta.workingDirectory}
                 onWorkingDirectoryChange={handleWorkingDirectoryChange}
+                isWorkingDirectoryLocked={!!sessionMeta?.projectId}
                 messagesLoading={true}
               />
             </div>
@@ -436,6 +437,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
             workingDirectory={workingDirectory}
             onWorkingDirectoryChange={handleWorkingDirectoryChange}
             sessionFolderPath={session?.sessionFolderPath}
+            isWorkingDirectoryLocked={!!session?.projectId}
             messagesLoading={!messagesLoaded}
           />
         </div>
