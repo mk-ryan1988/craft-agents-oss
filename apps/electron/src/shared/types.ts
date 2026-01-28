@@ -48,6 +48,10 @@ export type { LoadedSource, FolderSourceConfig, SourceConnectionStatus };
 import type { LoadedSkill, SkillMetadata } from '@craft-agent/shared/skills/types';
 export type { LoadedSkill, SkillMetadata };
 
+// Import project types
+import type { ProjectConfig, LoadedProject, CreateProjectInput, UpdateProjectInput } from '@craft-agent/shared/projects';
+export type { ProjectConfig, LoadedProject, CreateProjectInput, UpdateProjectInput };
+
 
 /**
  * File/directory entry in a skill folder
@@ -252,6 +256,8 @@ export interface Session {
   id: string
   workspaceId: string
   workspaceName: string
+  /** Project ID this session belongs to (if assigned) */
+  projectId?: string
   name?: string  // User-defined or AI-generated session name
   /** Preview of first user message (from JSONL header, for lazy-loaded sessions) */
   preview?: string
@@ -321,6 +327,8 @@ export interface CreateSessionOptions {
    * - Absolute path string: Use this specific path
    */
   workingDirectory?: string | 'user_default' | 'none'
+  /** Project ID to assign this session to */
+  projectId?: string
 }
 
 // Events sent from main to renderer
@@ -349,6 +357,8 @@ export type SessionEvent =
   | { type: 'plan_submitted'; sessionId: string; message: CoreMessage }
   // Source events
   | { type: 'sources_changed'; sessionId: string; enabledSourceSlugs: string[] }
+  // Project events
+  | { type: 'project_changed'; sessionId: string; projectId?: string }
   // Background task/shell events
   | { type: 'task_backgrounded'; sessionId: string; toolUseId: string; taskId: string; intent?: string; turnId?: string }
   | { type: 'shell_backgrounded'; sessionId: string; toolUseId: string; shellId: string; intent?: string; command?: string; turnId?: string }
@@ -401,6 +411,7 @@ export type SessionCommand =
   | { type: 'setThinkingLevel'; level: ThinkingLevel }
   | { type: 'updateWorkingDirectory'; dir: string }
   | { type: 'setSources'; sourceSlugs: string[] }
+  | { type: 'setProject'; projectId: string | null }
   | { type: 'showInFinder' }
   | { type: 'copyPath' }
   | { type: 'shareToViewer' }
@@ -585,6 +596,15 @@ export const IPC_CHANNELS = {
   SKILLS_OPEN_EDITOR: 'skills:openEditor',
   SKILLS_OPEN_FINDER: 'skills:openFinder',
   SKILLS_CHANGED: 'skills:changed',
+
+  // Projects (workspace-scoped)
+  PROJECTS_LIST: 'projects:list',
+  PROJECTS_GET: 'projects:get',
+  PROJECTS_CREATE: 'projects:create',
+  PROJECTS_UPDATE: 'projects:update',
+  PROJECTS_DELETE: 'projects:delete',
+  PROJECTS_FIND_FOR_PATH: 'projects:findForPath',
+  PROJECTS_CHANGED: 'projects:changed',
 
   // Status management (workspace-scoped)
   STATUSES_LIST: 'statuses:list',
@@ -810,6 +830,15 @@ export interface ElectronAPI {
   // Skills change listener (live updates when skills are added/removed/modified)
   onSkillsChanged(callback: (skills: LoadedSkill[]) => void): () => void
 
+  // Projects (workspace-scoped)
+  listProjects(workspaceId: string): Promise<LoadedProject[]>
+  getProject(workspaceId: string, projectSlug: string): Promise<LoadedProject | null>
+  createProject(workspaceId: string, input: CreateProjectInput): Promise<ProjectConfig>
+  updateProject(workspaceId: string, projectSlug: string, updates: UpdateProjectInput): Promise<ProjectConfig | null>
+  deleteProject(workspaceId: string, projectSlug: string): Promise<boolean>
+  findProjectForPath(workspaceId: string, path: string): Promise<LoadedProject | null>
+  onProjectsChanged(callback: (projects: LoadedProject[]) => void): () => void
+
   // Statuses (workspace-scoped)
   listStatuses(workspaceId: string): Promise<import('@craft-agent/shared/statuses').StatusConfig[]>
   // Statuses change listener (live updates when statuses config or icon files change)
@@ -1008,6 +1037,26 @@ export interface SkillsNavigationState {
 }
 
 /**
+ * Project filter for sessions list
+ */
+export type ProjectFilter =
+  | { kind: 'allProjects' }  // All sessions that belong to any project
+  | { kind: 'project'; projectId: string }  // Sessions for a specific project
+
+/**
+ * Projects navigation state - shows sessions filtered by project in navigator
+ */
+export interface ProjectsNavigationState {
+  navigator: 'projects'
+  /** Filter for which project sessions to show */
+  filter: ProjectFilter
+  /** Selected session, or null for empty state */
+  details: { type: 'session'; sessionId: string } | null
+  /** Optional right sidebar panel state */
+  rightSidebar?: RightSidebarPanel
+}
+
+/**
  * Unified navigation state - single source of truth for all 3 panels
  *
  * From this state we can derive:
@@ -1020,6 +1069,7 @@ export type NavigationState =
   | SourcesNavigationState
   | SettingsNavigationState
   | SkillsNavigationState
+  | ProjectsNavigationState
 
 /**
  * Type guard to check if state is chats navigation
@@ -1048,6 +1098,13 @@ export const isSettingsNavigation = (
 export const isSkillsNavigation = (
   state: NavigationState
 ): state is SkillsNavigationState => state.navigator === 'skills'
+
+/**
+ * Type guard to check if state is projects navigation
+ */
+export const isProjectsNavigation = (
+  state: NavigationState
+): state is ProjectsNavigationState => state.navigator === 'projects'
 
 /**
  * Default navigation state - allChats with no selection
@@ -1081,6 +1138,18 @@ export const getNavigationStateKey = (state: NavigationState): string => {
   }
   if (state.navigator === 'settings') {
     return `settings:${state.subpage}`
+  }
+  if (state.navigator === 'projects') {
+    // Build base from filter
+    let base = 'projects'
+    if (state.filter.kind === 'project') {
+      base = `projects/project/${state.filter.projectId}`
+    }
+    // Add session details if selected
+    if (state.details) {
+      return `${base}/session/${state.details.sessionId}`
+    }
+    return base
   }
   // Chats
   const f = state.filter

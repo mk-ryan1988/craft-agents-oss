@@ -74,7 +74,7 @@ export const FreeFormInputContextBadge = React.forwardRef<HTMLButtonElement, Fre
         className={cn(
           // Base styles
           "inline-flex items-center gap-1.5 h-7 rounded-[6px] text-[13px] text-foreground transition-colors select-none",
-          "disabled:opacity-50 disabled:pointer-events-none",
+          "disabled:opacity-50 disabled:cursor-default",
           // Padding: more padding when showing label
           showLabel ? "px-2" : "px-1.5",
           // Collapsed with selection: visible background + thin shadow + margin

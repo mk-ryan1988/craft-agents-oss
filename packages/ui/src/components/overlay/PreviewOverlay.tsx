@@ -65,7 +65,7 @@ export interface PreviewOverlayProps {
 export function PreviewOverlay({
   isOpen,
   onClose,
-  theme = 'light',
+  theme: _theme, // Deprecated: theme is now auto-inherited from CSS variables
   badge,
   title,
   onTitleClick,
@@ -73,8 +73,8 @@ export function PreviewOverlay({
   error,
   headerActions,
   children,
-  backgroundColor,
-  textColor,
+  backgroundColor: _backgroundColor, // Deprecated: use CSS variables
+  textColor: _textColor, // Deprecated: use CSS variables
 }: PreviewOverlayProps) {
   const responsiveMode = useOverlayMode()
   const isModal = responsiveMode === 'modal'
@@ -94,11 +94,6 @@ export function PreviewOverlay({
   }, [isOpen, isModal, onClose])
 
   if (!isOpen) return null
-
-  const defaultBg = theme === 'dark' ? '#1e1e1e' : '#ffffff'
-  const defaultText = theme === 'dark' ? '#e4e4e4' : '#1a1a1a'
-  const bgColor = backgroundColor ?? defaultBg
-  const txtColor = textColor ?? defaultText
 
   const header = (
     <PreviewHeader onClose={onClose} height={isModal ? 48 : 54}>
@@ -131,12 +126,9 @@ export function PreviewOverlay({
       <FullscreenOverlayBase
         isOpen={isOpen}
         onClose={onClose}
-        className="flex flex-col bg-background"
+        className="flex flex-col bg-background text-foreground"
       >
-        <div
-          className="flex flex-col flex-1 min-h-0"
-          style={{ backgroundColor: bgColor, color: txtColor }}
-        >
+        <div className="flex flex-col flex-1 min-h-0 bg-background text-foreground">
           {header}
           {errorBanner}
           {contentArea}
@@ -154,10 +146,8 @@ export function PreviewOverlay({
       }}
     >
       <div
-        className="flex flex-col bg-background shadow-3xl overflow-hidden smooth-corners"
+        className="flex flex-col bg-background text-foreground shadow-3xl overflow-hidden smooth-corners"
         style={{
-          backgroundColor: bgColor,
-          color: txtColor,
           width: '90vw',
           maxWidth: OVERLAY_LAYOUT.modalMaxWidth,
           height: `${OVERLAY_LAYOUT.modalMaxHeightPercent}vh`,

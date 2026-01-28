@@ -128,6 +128,8 @@ interface ChatDisplayProps {
   onWorkingDirectoryChange?: (path: string) => void
   /** Session folder path (for "Reset to Session Root" option) */
   sessionFolderPath?: string
+  /** Whether the working directory is locked (e.g., session is part of a project) */
+  isWorkingDirectoryLocked?: boolean
   // Lazy loading
   /** When true, messages are still loading - show spinner in messages area */
   messagesLoading?: boolean
@@ -343,6 +345,7 @@ export function ChatDisplay({
   workingDirectory,
   onWorkingDirectoryChange,
   sessionFolderPath,
+  isWorkingDirectoryLocked = false,
   // Lazy loading
   messagesLoading = false,
   // Tutorial
@@ -880,6 +883,7 @@ export function ChatDisplay({
               workingDirectory={workingDirectory}
               onWorkingDirectoryChange={onWorkingDirectoryChange}
               sessionFolderPath={sessionFolderPath}
+              isWorkingDirectoryLocked={isWorkingDirectoryLocked}
               sessionId={session.id}
               disableSend={disableSend}
               isEmptySession={session.messages.length === 0}

@@ -10,12 +10,14 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { AlertCircle } from 'lucide-react'
 import { ChatDisplay } from '@/components/app-shell/ChatDisplay'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
+import { ProjectBadge } from '@/components/app-shell/ProjectBadge'
 import { SessionMenu } from '@/components/app-shell/SessionMenu'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { useAppShellContext, usePendingPermission, usePendingCredential, useSessionOptionsFor, useSession as useSessionData } from '@/context/AppShellContext'
 import { rendererPerf } from '@/lib/perf'
 import { routes } from '@/lib/navigate'
 import { ensureSessionMessagesLoadedAtom, loadedSessionsAtom, sessionMetaMapAtom } from '@/atoms/sessions'
+import { projectsAtom } from '@/atoms/projects'
 import { getSessionTitle } from '@/utils/session'
 
 export interface ChatPageProps {
@@ -46,6 +48,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     enabledModes,
     todoStates,
     onSessionSourcesChange,
+    onSessionProjectChange,
     onRenameSession,
     onFlagSession,
     onUnflagSession,
@@ -53,6 +56,9 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     onDeleteSession,
     rightSidebarButton,
   } = useAppShellContext()
+
+  // Get projects for project badge
+  const projects = useAtomValue(projectsAtom)
 
   // Use the unified session options hook for clean access
   const {
@@ -300,6 +306,20 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     handleDelete,
   ])
 
+  // Build project badge for session header
+  const sessionProjectId = session?.projectId || sessionMeta?.projectId || null
+  const projectBadge = React.useMemo(() => (
+    <ProjectBadge
+      projectId={sessionProjectId}
+      projects={projects}
+      onProjectChange={(projectId) => {
+        if (onSessionProjectChange) {
+          onSessionProjectChange(sessionId, projectId)
+        }
+      }}
+    />
+  ), [sessionProjectId, projects, onSessionProjectChange, sessionId])
+
   // Handle missing session - loading or deleted
   if (!session) {
     if (sessionMeta) {
@@ -321,7 +341,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       return (
         <>
           <div className="h-full flex flex-col">
-            <PanelHeader  title={displayTitle} titleMenu={titleMenu} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+            <PanelHeader title={displayTitle} titleMenu={titleMenu} projectBadge={projectBadge} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
             <div className="flex-1 flex flex-col min-h-0">
               <ChatDisplay
                 session={skeletonSession}
@@ -350,6 +370,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
                 onSourcesChange={(slugs) => onSessionSourcesChange?.(sessionId, slugs)}
                 workingDirectory={sessionMeta.workingDirectory}
                 onWorkingDirectoryChange={handleWorkingDirectoryChange}
+                isWorkingDirectoryLocked={!!sessionMeta?.projectId}
                 messagesLoading={true}
               />
             </div>
@@ -382,7 +403,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   return (
     <>
       <div className="h-full flex flex-col">
-        <PanelHeader  title={displayTitle} titleMenu={titleMenu} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+        <PanelHeader title={displayTitle} titleMenu={titleMenu} projectBadge={projectBadge} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
         <div className="flex-1 flex flex-col min-h-0">
           <ChatDisplay
             session={session}
@@ -416,6 +437,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
             workingDirectory={workingDirectory}
             onWorkingDirectoryChange={handleWorkingDirectoryChange}
             sessionFolderPath={session?.sessionFolderPath}
+            isWorkingDirectoryLocked={!!session?.projectId}
             messagesLoading={!messagesLoaded}
           />
         </div>

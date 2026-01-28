@@ -49,6 +49,7 @@ import type {
   NavigationState,
   ChatFilter,
   SourceFilter,
+  ProjectFilter,
   RightSidebarPanel,
   ContentBadge,
 } from '../../shared/types'
@@ -57,19 +58,21 @@ import {
   isSourcesNavigation,
   isSettingsNavigation,
   isSkillsNavigation,
+  isProjectsNavigation,
   DEFAULT_NAVIGATION_STATE,
 } from '../../shared/types'
 import { sessionMetaMapAtom, type SessionMeta } from '@/atoms/sessions'
 import { sourcesAtom } from '@/atoms/sources'
 import { skillsAtom } from '@/atoms/skills'
+import { projectsAtom } from '@/atoms/projects'
 
 // Re-export routes for convenience
 export { routes }
 export type { Route }
 
 // Re-export navigation state types for consumers
-export type { NavigationState, ChatFilter }
-export { isChatsNavigation, isSourcesNavigation, isSettingsNavigation, isSkillsNavigation }
+export type { NavigationState, ChatFilter, ProjectFilter }
+export { isChatsNavigation, isSourcesNavigation, isSettingsNavigation, isSkillsNavigation, isProjectsNavigation }
 
 interface NavigationContextValue {
   /** Navigate to a route */
@@ -124,6 +127,9 @@ export function NavigationProvider({
 
   // Read skills from atom (populated by AppShell)
   const skills = useAtomValue(skillsAtom)
+
+  // Read projects from atom (populated by AppShell)
+  const projects = useAtomValue(projectsAtom)
 
   // UNIFIED NAVIGATION STATE - single source of truth for all 3 panels
   const [navigationState, setNavigationState] = useState<NavigationState>(DEFAULT_NAVIGATION_STATE)
@@ -198,6 +204,14 @@ export function NavigationProvider({
       return skills[0]?.slug ?? null
     },
     [skills]
+  )
+
+  // Helper: Get first project slug
+  const getFirstProjectSlug = useCallback(
+    (): string | null => {
+      return projects[0]?.config.slug ?? null
+    },
+    [projects]
   )
 
   // Handle action navigation (side effects that don't change navigation state)
@@ -387,6 +401,11 @@ export function NavigationProvider({
         }
       }
 
+      // For projects with explicit session: update session selection
+      if (isProjectsNavigation(newState) && newState.details) {
+        setSession({ selected: newState.details.sessionId })
+      }
+
       // For chats with explicit session: update session selection
       if (isChatsNavigation(newState) && newState.details) {
         setSession({ selected: newState.details.sessionId })
@@ -396,7 +415,7 @@ export function NavigationProvider({
       setNavigationState(newState)
       return newState
     },
-    [getFirstSessionId, getFirstSourceSlug, getFirstSkillSlug, setSession]
+    [getFirstSessionId, getFirstSourceSlug, getFirstSkillSlug, getFirstProjectSlug, setSession]
   )
 
   // Main navigate function - unified approach using NavigationState
@@ -498,8 +517,13 @@ export function NavigationProvider({
       return skills.some(s => s.slug === navState.details!.skillSlug)
     }
 
+    if (isProjectsNavigation(navState) && navState.details) {
+      // Details is now a session, not a project
+      return sessionMetaMap.has(navState.details.sessionId)
+    }
+
     return true // Routes without details are always valid
-  }, [sessionMetaMap, sources, skills])
+  }, [sessionMetaMap, sources, skills, projects])
 
   // Go back in history (using our custom stack)
   // When encountering invalid entries (deleted sessions/sources), remove them from the stack

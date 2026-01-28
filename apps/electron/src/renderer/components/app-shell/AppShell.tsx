@@ -20,6 +20,7 @@ import {
   Inbox,
   Globe,
   FolderOpen,
+  FolderGit2,
   HelpCircle,
   ExternalLink,
 } from "lucide-react"
@@ -71,10 +72,11 @@ import { useFocusZone, useGlobalShortcuts } from "@/hooks/keyboard"
 import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
-import type { Session, Workspace, FileAttachment, PermissionRequest, TodoState, LoadedSource, LoadedSkill, PermissionMode, SourceFilter } from "../../../shared/types"
+import type { Session, Workspace, FileAttachment, PermissionRequest, TodoState, LoadedSource, LoadedSkill, LoadedProject, PermissionMode, SourceFilter } from "../../../shared/types"
 import { sessionMetaMapAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
+import { projectsAtom, initializeProjectsAtom, addProjectAtom, updateProjectAtom, removeProjectAtom } from "@/atoms/projects"
 import { type TodoStateId, statusConfigsToTodoStates } from "@/config/todo-states"
 import { useStatuses } from "@/hooks/useStatuses"
 import * as storage from "@/lib/local-storage"
@@ -87,12 +89,15 @@ import {
   isSourcesNavigation,
   isSettingsNavigation,
   isSkillsNavigation,
+  isProjectsNavigation,
   type NavigationState,
   type ChatFilter,
+  type ProjectFilter,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
 import { SourcesListPanel } from "./SourcesListPanel"
 import { SkillsListPanel } from "./SkillsListPanel"
+import { ProjectsListPanel } from "./ProjectsListPanel"
 import { PanelHeader } from "./PanelHeader"
 import { EditPopover, getEditConfig } from "@/components/ui/EditPopover"
 import { getDocUrl } from "@craft-agent/shared/docs/doc-links"
@@ -240,6 +245,9 @@ function AppShellContent({
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
 
+  // Derive project filter from navigation state (only when in projects navigator)
+  const projectFilter = isProjectsNavigation(navState) ? navState.filter : null
+
   // Session list filter: empty set shows all, otherwise shows only sessions with selected states
   const [listFilter, setListFilter] = React.useState<Set<TodoStateId>>(() => {
     const saved = storage.get<TodoStateId[]>(storage.KEYS.listFilter, [])
@@ -265,8 +273,9 @@ function AppShellContent({
 
   // Auto-hide right sidebar when navigating away from chat sessions
   React.useEffect(() => {
-    // Hide sidebar if not in chat view or no session selected
-    if (!isChatsNavigation(navState) || !navState.details) {
+    // Hide sidebar if not in chat/projects view or no session selected
+    const hasSession = (isChatsNavigation(navState) || isProjectsNavigation(navState)) && navState.details
+    if (!hasSession) {
       setSkipRightSidebarAnimation(true)
       setIsRightSidebarVisible(false)
       // Reset skip flag after state update
@@ -388,6 +397,32 @@ function AppShellContent({
     return cleanup
   }, [])
 
+  // Projects state (workspace-scoped)
+  const [projects, setProjects] = React.useState<LoadedProject[]>([])
+  // Sync projects to atom for UI components
+  const initializeProjects = useSetAtom(initializeProjectsAtom)
+  React.useEffect(() => {
+    initializeProjects(projects)
+  }, [projects, initializeProjects])
+
+  // Load projects from backend on workspace change
+  React.useEffect(() => {
+    if (!activeWorkspaceId) return
+    window.electronAPI.listProjects(activeWorkspaceId).then((loaded) => {
+      setProjects(loaded || [])
+    }).catch(err => {
+      console.error('[AppShell] Failed to load projects:', err)
+    })
+  }, [activeWorkspaceId])
+
+  // Subscribe to live project updates
+  React.useEffect(() => {
+    const cleanup = window.electronAPI.onProjectsChanged?.((updatedProjects) => {
+      setProjects(updatedProjects || [])
+    })
+    return cleanup
+  }, [])
+
   // Handle session source selection changes
   const handleSessionSourcesChange = React.useCallback(async (sessionId: string, sourceSlugs: string[]) => {
     try {
@@ -397,6 +432,28 @@ function AppShellContent({
       console.error('[Chat] Failed to set session sources:', err)
     }
   }, [])
+
+  // Handle session project assignment changes
+  // Also updates working directory to match project's rootPath when assigning to a project
+  const handleSessionProjectChange = React.useCallback(async (sessionId: string, projectId: string | null) => {
+    try {
+      await window.electronAPI.sessionCommand(sessionId, { type: 'setProject', projectId })
+
+      // When assigning to a project, also update working directory to project's root path
+      if (projectId) {
+        const project = projects.find(p => p.config.id === projectId)
+        if (project?.config.rootPath) {
+          await window.electronAPI.sessionCommand(sessionId, {
+            type: 'updateWorkingDirectory',
+            dir: project.config.rootPath,
+          })
+        }
+      }
+      // Session will emit events that update the session state
+    } catch (err) {
+      console.error('[AppShell] Failed to set session project:', err)
+    }
+  }, [projects])
 
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId)
 
@@ -478,8 +535,10 @@ function AppShellContent({
       { key: 'o', cmd: true, action: () => setIsSidebarVisible(v => !v) },
       // Right sidebar (chat info) toggle
       { key: 'b', cmd: true, action: () => setIsRightSidebarVisible(v => !v) },
-      // New chat
-      { key: 'n', cmd: true, action: () => handleNewChat(true) },
+      // New chat (context-aware: creates in current project if in project view)
+      { key: 'n', cmd: true, action: () => handleNewChat(false) },
+      // New unassigned chat (always creates without project, even when in project view)
+      { key: 'n', cmd: true, shift: true, action: () => handleNewChat(true) },
       // Settings
       { key: ',', cmd: true, action: onOpenSettings },
       // History navigation
@@ -654,10 +713,28 @@ function AppShellContent({
     return counts
   }, [sources])
 
-  // Filter session metadata based on sidebar mode and chat filter
+  // Filter session metadata based on sidebar mode and chat/project filter
   const filteredSessionMetas = useMemo(() => {
-    // When in sources mode, return empty (no sessions to show)
+    // Handle project filter (projects navigator)
+    if (projectFilter) {
+      let result: SessionMeta[]
+      if (projectFilter.kind === 'allProjects') {
+        // Show all sessions that belong to any project
+        result = workspaceSessionMetas.filter(s => s.projectId)
+      } else {
+        // Show sessions for specific project
+        result = workspaceSessionMetas.filter(s => s.projectId === projectFilter.projectId)
+      }
+      // Apply secondary filter by todo states if any are selected
+      if (listFilter.size > 0) {
+        result = result.filter(s => listFilter.has((s.todoState || 'todo') as TodoStateId))
+      }
+      return result
+    }
+
+    // Handle chat filter (chats navigator)
     if (!chatFilter) {
+      // No filter - return empty (sources/skills/settings mode)
       return []
     }
 
@@ -685,7 +762,65 @@ function AppShellContent({
     }
 
     return result
-  }, [workspaceSessionMetas, chatFilter, listFilter])
+  }, [workspaceSessionMetas, chatFilter, projectFilter, listFilter])
+
+  // Compute session counts per project (from all workspace sessions, not filtered)
+  const projectSessionCounts = React.useMemo(() => {
+    const counts = new Map<string, number>()
+    workspaceSessionMetas.forEach((meta) => {
+      if (meta.projectId) {
+        counts.set(meta.projectId, (counts.get(meta.projectId) || 0) + 1)
+      }
+    })
+    return counts
+  }, [workspaceSessionMetas])
+
+  // Total count of sessions that belong to any project
+  const allProjectSessionsCount = React.useMemo(() => {
+    return workspaceSessionMetas.filter(s => s.projectId).length
+  }, [workspaceSessionMetas])
+
+  // Handle selecting a project from the list
+  const handleProjectSelect = React.useCallback((project: LoadedProject | null) => {
+    if (!activeWorkspaceId) return
+    if (project) {
+      navigate(routes.view.projects(project.config.slug))
+    } else {
+      navigate(routes.view.projects())
+    }
+  }, [activeWorkspaceId, navigate])
+
+  // Handle renaming a project
+  const handleProjectRename = React.useCallback(async (projectSlug: string, name: string) => {
+    if (!activeWorkspaceId) return
+    try {
+      await window.electronAPI.updateProject(activeWorkspaceId, projectSlug, { name })
+      toast.success('Project renamed')
+    } catch (err) {
+      console.error('[AppShell] Failed to rename project:', err)
+      toast.error('Failed to rename project')
+    }
+  }, [activeWorkspaceId])
+
+  // Handle deleting a project
+  const handleProjectDelete = React.useCallback(async (projectSlug: string) => {
+    if (!activeWorkspaceId) return
+    try {
+      await window.electronAPI.deleteProject(activeWorkspaceId, projectSlug)
+      toast.success('Project deleted')
+      // Navigate back to projects list
+      navigate(routes.view.projects())
+    } catch (err) {
+      console.error('[AppShell] Failed to delete project:', err)
+      toast.error('Failed to delete project')
+    }
+  }, [activeWorkspaceId, navigate])
+
+  // Handle opening project folder in Finder
+  const handleOpenProjectInFinder = React.useCallback((project: LoadedProject) => {
+    // Use openUrl with file:// protocol to open folder in Finder
+    window.electronAPI.openUrl(`file://${project.config.rootPath}`)
+  }, [])
 
   // Ensure session messages are loaded when selected
   React.useEffect(() => {
@@ -704,9 +839,10 @@ function AppShellContent({
     return onDeleteSession(sessionId, skipConfirmation)
   }, [session.selected, setSession, onDeleteSession])
 
-  // Right sidebar OPEN button (fades out when sidebar is open, hidden in focused mode or non-chat views)
+  // Right sidebar OPEN button (fades out when sidebar is open, hidden in focused mode or non-session views)
   const rightSidebarOpenButton = React.useMemo(() => {
-    if (isFocusedMode || !isChatsNavigation(navState) || !navState.details) return null
+    const hasSession = (isChatsNavigation(navState) || isProjectsNavigation(navState)) && navState.details
+    if (isFocusedMode || !hasSession) return null
 
     return (
       <motion.div
@@ -749,8 +885,9 @@ function AppShellContent({
     enabledModes,
     todoStates,
     onSessionSourcesChange: handleSessionSourcesChange,
+    onSessionProjectChange: handleSessionProjectChange,
     rightSidebarButton: rightSidebarOpenButton,
-  }), [contextValue, handleDeleteSession, sources, skills, enabledModes, todoStates, handleSessionSourcesChange, rightSidebarOpenButton])
+  }), [contextValue, handleDeleteSession, sources, skills, enabledModes, todoStates, handleSessionSourcesChange, handleSessionProjectChange, rightSidebarOpenButton])
 
   // Persist expanded folders to localStorage
   React.useEffect(() => {
@@ -813,6 +950,16 @@ function AppShellContent({
     navigate(routes.view.skills())
   }, [])
 
+  // Handler for projects view (all project sessions)
+  const handleProjectsClick = useCallback(() => {
+    navigate(routes.view.projects())
+  }, [navigate])
+
+  // Handler for specific project click
+  const handleProjectClick = useCallback((projectId: string) => {
+    navigate(routes.view.projects(projectId))
+  }, [navigate])
+
   // Handler for settings view
   const handleSettingsClick = useCallback((subpage: SettingsSubpage = 'app') => {
     navigate(routes.view.settings(subpage))
@@ -825,7 +972,7 @@ function AppShellContent({
   // We use controlled popovers instead of deep links so the user can type
   // their request in the popover UI before opening a new chat window.
   // add-source variants: add-source (generic), add-source-api, add-source-mcp, add-source-local
-  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-local' | 'add-skill' | null>(null)
+  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-local' | 'add-skill' | 'add-project' | null>(null)
 
   // Handler for "Configure Statuses" context menu action
   // Opens the EditPopover for status configuration
@@ -849,14 +996,43 @@ function AppShellContent({
     setTimeout(() => setEditPopoverOpen('add-skill'), 50)
   }, [])
 
+  // Handler for "Add Project" context menu action
+  // Opens the EditPopover for adding a new project
+  const openAddProject = useCallback(() => {
+    setTimeout(() => setEditPopoverOpen('add-project'), 50)
+  }, [])
+
   // Create a new chat and select it
-  const handleNewChat = useCallback(async (_useCurrentAgent: boolean = true) => {
+  // If forceUnassigned is true, creates an unassigned chat regardless of context
+  // Otherwise, if in a specific project context, assigns the chat to that project
+  // and sets the working directory to the project's root path
+  const handleNewChat = useCallback(async (forceUnassigned: boolean = false) => {
     if (!activeWorkspace) return
 
-    const newSession = await onCreateSession(activeWorkspace.id)
-    // Navigate to the new session via central routing
-    navigate(routes.view.allChats(newSession.id))
-  }, [activeWorkspace, onCreateSession])
+    // Check if we're in a specific project context (not "All Projects")
+    const inSpecificProject = isProjectsNavigation(navState) &&
+      projectFilter?.kind === 'project' &&
+      projectFilter.projectId
+
+    // Create session with project assignment if in project context and not forcing unassigned
+    const projectId = (!forceUnassigned && inSpecificProject) ? projectFilter.projectId : undefined
+
+    // If creating in a project, also set working directory to project's root path
+    const project = projectId ? projects.find(p => p.config.id === projectId) : undefined
+    const createOptions = projectId ? {
+      projectId,
+      workingDirectory: project?.config.rootPath,
+    } : undefined
+
+    const newSession = await onCreateSession(activeWorkspace.id, createOptions)
+
+    // Navigate to the new session - stay in project context if we created a project chat
+    if (projectId) {
+      navigate(routes.view.projects(projectId, newSession.id))
+    } else {
+      navigate(routes.view.allChats(newSession.id))
+    }
+  }, [activeWorkspace, onCreateSession, navState, projectFilter, navigate, projects])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
@@ -882,13 +1058,13 @@ function AppShellContent({
     }
   }, [activeWorkspace])
 
-  // Respond to menu bar "New Chat" trigger
+  // Respond to menu bar "New Chat" trigger (context-aware)
   const menuTriggerRef = useRef(menuNewChatTrigger)
   useEffect(() => {
     // Skip initial render
     if (menuTriggerRef.current === menuNewChatTrigger) return
     menuTriggerRef.current = menuNewChatTrigger
-    handleNewChat(true)
+    handleNewChat(false)
   }, [menuNewChatTrigger, handleNewChat])
 
   // Unified sidebar items: nav buttons only (agents system removed)
@@ -910,13 +1086,16 @@ function AppShellContent({
       result.push({ id: `nav:state:${state.id}`, type: 'nav', action: () => handleTodoStateClick(state.id) })
     }
 
-    // 2.5. Sources nav item
+    // 2.5. Projects nav item
+    result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
+
+    // 2.6. Sources nav item
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
 
-    // 2.6. Skills nav item
+    // 2.7. Skills nav item
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
 
-    // 2.7. Settings nav item
+    // 2.8. Settings nav item
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick('app') })
 
     return result
@@ -1075,7 +1254,7 @@ function AppShellContent({
           style={{ width: sidebarWidth - 86 }}
         >
           <AppMenu
-            onNewChat={() => handleNewChat(true)}
+            onNewChat={() => handleNewChat(false)}
             onOpenSettings={onOpenSettings}
             onOpenKeyboardShortcuts={onOpenKeyboardShortcuts}
             onOpenStoredUserPreferences={onOpenStoredUserPreferences}
@@ -1120,7 +1299,7 @@ function AppShellContent({
                     <ContextMenuTrigger asChild>
                       <Button
                         variant="ghost"
-                        onClick={() => handleNewChat(true)}
+                        onClick={() => handleNewChat(false)}
                         className="w-full justify-start gap-2 py-[7px] px-2 text-[13px] font-normal rounded-[6px] shadow-minimal bg-background"
                         data-tutorial="new-chat-button"
                       >
@@ -1192,6 +1371,33 @@ function AppShellContent({
                           },
                         },
                       ],
+                    },
+                    {
+                      id: "nav:projects",
+                      title: "Projects",
+                      label: String(allProjectSessionsCount),
+                      icon: FolderGit2,
+                      // Highlight when in projects navigator and showing all projects
+                      variant: (isProjectsNavigation(navState) && projectFilter?.kind === 'allProjects') ? "default" : "ghost",
+                      onClick: handleProjectsClick,
+                      // Make expandable with project items
+                      expandable: projects.length > 0,
+                      expanded: isExpanded('nav:projects'),
+                      onToggle: () => toggleExpanded('nav:projects'),
+                      // Context menu: Add Project
+                      contextMenu: {
+                        type: 'projects',
+                        onAddProject: openAddProject,
+                      },
+                      // Project items as children
+                      items: projects.map(project => ({
+                        id: `nav:project:${project.config.id}`,
+                        title: project.config.name,
+                        label: String(projectSessionCounts.get(project.config.id) || 0),
+                        icon: FolderGit2,
+                        variant: (projectFilter?.kind === 'project' && projectFilter.projectId === project.config.id) ? "default" : "ghost",
+                        onClick: () => handleProjectClick(project.config.id),
+                      })),
                     },
                     {
                       id: "nav:sources",
@@ -1389,8 +1595,8 @@ function AppShellContent({
               compensateForStoplight={!isSidebarVisible}
               actions={
                 <>
-                  {/* Filter dropdown - allows filtering by todo states (only in All Chats view) */}
-                  {chatFilter?.kind === 'allChats' && (
+                  {/* Filter dropdown - allows filtering by todo states (All Chats and Projects views) */}
+                  {(chatFilter?.kind === 'allChats' || isProjectsNavigation(navState)) && (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <HeaderIconButton
@@ -1549,6 +1755,44 @@ function AppShellContent({
                 selectedSkillSlug={isSkillsNavigation(navState) && navState.details ? navState.details.skillSlug : null}
               />
             )}
+            {isProjectsNavigation(navState) && activeWorkspaceId && (
+              /* Project Sessions List */
+              <SessionList
+                key={projectFilter?.kind === 'project' ? projectFilter.projectId : 'allProjects'}
+                items={filteredSessionMetas}
+                onDelete={handleDeleteSession}
+                onFlag={onFlagSession}
+                onUnflag={onUnflagSession}
+                onMarkUnread={onMarkSessionUnread}
+                onTodoStateChange={onTodoStateChange}
+                onRename={onRenameSession}
+                onFocusChatInput={focusChatInput}
+                onSessionSelect={(selectedMeta) => {
+                  // Navigate to the session via central routing (with project filter context)
+                  if (projectFilter?.kind === 'project') {
+                    navigate(routes.view.projects(projectFilter.projectId, selectedMeta.id))
+                  } else {
+                    navigate(routes.view.projects(undefined, selectedMeta.id))
+                  }
+                }}
+                onOpenInNewWindow={(selectedMeta) => {
+                  if (activeWorkspaceId) {
+                    window.electronAPI.openSessionInNewWindow(activeWorkspaceId, selectedMeta.id)
+                  }
+                }}
+                sessionOptions={sessionOptions}
+                searchActive={searchActive}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                onSearchClose={() => {
+                  setSearchActive(false)
+                  setSearchQuery('')
+                }}
+                todoStates={todoStates}
+                projects={projects}
+                onProjectChange={handleSessionProjectChange}
+              />
+            )}
             {isSettingsNavigation(navState) && (
               /* Settings Navigator */
               <SettingsNavigator
@@ -1602,6 +1846,8 @@ function AppShellContent({
                     setSearchQuery('')
                   }}
                   todoStates={todoStates}
+                  projects={projects}
+                  onProjectChange={handleSessionProjectChange}
                 />
               </>
             )}
@@ -1689,7 +1935,11 @@ function AppShellContent({
                 >
                   <RightSidebar
                     panel={{ type: 'sessionMetadata' }}
-                    sessionId={isChatsNavigation(navState) && navState.details ? navState.details.sessionId : undefined}
+                    sessionId={
+                      (isChatsNavigation(navState) && navState.details?.sessionId) ||
+                      (isProjectsNavigation(navState) && navState.details?.sessionId) ||
+                      undefined
+                    }
                     closeButton={rightSidebarCloseButton}
                   />
                 </motion.div>
@@ -1722,7 +1972,11 @@ function AppShellContent({
                     <div className="h-full bg-foreground-2 overflow-hidden shadow-strong rounded-[12px]">
                       <RightSidebar
                         panel={{ type: 'sessionMetadata' }}
-                        sessionId={isChatsNavigation(navState) && navState.details ? navState.details.sessionId : undefined}
+                        sessionId={
+                          (isChatsNavigation(navState) && navState.details?.sessionId) ||
+                          (isProjectsNavigation(navState) && navState.details?.sessionId) ||
+                          undefined
+                        }
                         closeButton={rightSidebarCloseButton}
                       />
                     </div>
@@ -1796,6 +2050,21 @@ function AppShellContent({
             side="bottom"
             align="start"
             {...getEditConfig('add-skill', activeWorkspace.rootPath)}
+          />
+          {/* Add Project EditPopover */}
+          <EditPopover
+            open={editPopoverOpen === 'add-project'}
+            onOpenChange={(isOpen) => setEditPopoverOpen(isOpen ? 'add-project' : null)}
+            modal={true}
+            trigger={
+              <div
+                className="fixed top-[120px] w-0 h-0 pointer-events-none"
+                style={{ left: sidebarWidth + 20 }}
+              />
+            }
+            side="bottom"
+            align="start"
+            {...getEditConfig('add-project', activeWorkspace.rootPath)}
           />
         </>
       )}

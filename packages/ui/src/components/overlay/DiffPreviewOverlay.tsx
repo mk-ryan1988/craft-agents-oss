@@ -41,17 +41,14 @@ export function DiffPreviewOverlay({
   filePath,
   language,
   diffStyle = 'unified',
-  theme = 'light',
+  theme: _theme, // Deprecated: theme is now auto-detected from DOM
   error,
   onOpenFile,
 }: DiffPreviewOverlayProps) {
-  const backgroundColor = theme === 'dark' ? '#1e1e1e' : '#ffffff'
-
   return (
     <PreviewOverlay
       isOpen={isOpen}
       onClose={onClose}
-      theme={theme}
       badge={{
         icon: PencilLine,
         label: 'Edit',
@@ -60,16 +57,14 @@ export function DiffPreviewOverlay({
       title={truncateFilePath(filePath)}
       onTitleClick={onOpenFile ? () => onOpenFile(filePath) : undefined}
       error={error ? { label: 'Edit Failed', message: error } : undefined}
-      backgroundColor={backgroundColor}
     >
-      <div className="h-full" style={{ backgroundColor }}>
+      <div className="h-full bg-background">
         <ShikiDiffViewer
           original={original}
           modified={modified}
           filePath={filePath}
           language={language}
           diffStyle={diffStyle}
-          theme={theme}
         />
       </div>
     </PreviewOverlay>

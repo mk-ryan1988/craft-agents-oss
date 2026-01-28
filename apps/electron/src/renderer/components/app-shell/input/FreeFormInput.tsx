@@ -137,6 +137,8 @@ export interface FreeFormInputProps {
   onWorkingDirectoryChange?: (path: string) => void
   /** Session folder path (for "Reset to Session Root" option) */
   sessionFolderPath?: string
+  /** Whether the working directory is locked (e.g., session is part of a project) */
+  isWorkingDirectoryLocked?: boolean
   /** Session ID for scoping events like approve-plan */
   sessionId?: string
   /** Disable send action (for tutorial guidance) */
@@ -193,6 +195,7 @@ export function FreeFormInput({
   workingDirectory,
   onWorkingDirectoryChange,
   sessionFolderPath,
+  isWorkingDirectoryLocked = false,
   sessionId,
   disableSend = false,
   isEmptySession = false,
@@ -1236,6 +1239,7 @@ export function FreeFormInput({
               onWorkingDirectoryChange={onWorkingDirectoryChange}
               sessionFolderPath={sessionFolderPath}
               isEmptySession={isEmptySession}
+              disabled={isWorkingDirectoryLocked}
             />
           )}
 
@@ -1456,11 +1460,14 @@ function WorkingDirectoryBadge({
   onWorkingDirectoryChange,
   sessionFolderPath,
   isEmptySession = false,
+  disabled = false,
 }: {
   workingDirectory?: string
   onWorkingDirectoryChange: (path: string) => void
   sessionFolderPath?: string
   isEmptySession?: boolean
+  /** When true, the badge is shown but not clickable (e.g., project sessions) */
+  disabled?: boolean
 }) {
   const [recentDirs, setRecentDirs] = React.useState<string[]>([])
   const [popoverOpen, setPopoverOpen] = React.useState(false)
@@ -1549,20 +1556,21 @@ function WorkingDirectoryBadge({
   const MENU_ITEM_STYLE = 'flex cursor-pointer select-none items-center gap-2 rounded-[6px] px-3 py-1.5 text-[13px] outline-none'
 
   return (
-    <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-      <PopoverTrigger asChild>
+    <Popover open={popoverOpen} onOpenChange={disabled ? undefined : setPopoverOpen}>
+      <PopoverTrigger asChild disabled={disabled}>
         <span>
           <FreeFormInputContextBadge
             icon={<Icon_Folder className="h-4 w-4" strokeWidth={1.75} />}
             label={folderName}
             isExpanded={isEmptySession}
             hasSelection={hasFolder}
-            showChevron={true}
+            showChevron={!disabled}
             isOpen={popoverOpen}
+            disabled={disabled}
             tooltip={
               hasFolder ? (
                 <span className="flex flex-col gap-0.5">
-                  <span className="font-medium">Working directory</span>
+                  <span className="font-medium">Working directory{disabled ? ' (locked to project)' : ''}</span>
                   <span className="text-xs opacity-70">{formatPathForDisplay(workingDirectory, homeDir)}</span>
                   {gitBranch && <span className="text-xs opacity-70">on {gitBranch}</span>}
                 </span>

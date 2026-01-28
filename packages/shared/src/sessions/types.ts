@@ -76,6 +76,8 @@ export interface SessionConfig {
   workingDirectory?: string;
   /** SDK cwd for session storage - set once at creation, never changes. Ensures SDK can find session transcripts regardless of workingDirectory changes. */
   sdkCwd?: string;
+  /** Project this session belongs to (for code-centric organization) */
+  projectId?: string;
   /** Shared viewer URL (if shared via viewer) */
   sharedUrl?: string;
   /** Shared session ID in viewer (for revoke) */
@@ -135,6 +137,8 @@ export interface SessionHeader {
   workingDirectory?: string;
   /** SDK cwd for session storage - set once at creation, never changes */
   sdkCwd?: string;
+  /** Project this session belongs to (for code-centric organization) */
+  projectId?: string;
   /** Shared viewer URL (if shared via viewer) */
   sharedUrl?: string;
   /** Shared session ID in viewer (for revoke) */
@@ -194,6 +198,8 @@ export interface SessionMetadata {
   workingDirectory?: string;
   /** SDK cwd for session storage - set once at creation, never changes */
   sdkCwd?: string;
+  /** Project this session belongs to (for code-centric organization) */
+  projectId?: string;
   /** Role/type of the last message (for badge display without loading messages) */
   lastMessageRole?: 'user' | 'assistant' | 'plan' | 'tool' | 'error';
   /** Model to use for this session (overrides global config if set) */

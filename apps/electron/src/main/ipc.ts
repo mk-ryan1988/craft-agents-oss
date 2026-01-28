@@ -346,6 +346,8 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
         return sessionManager.updateWorkingDirectory(sessionId, command.dir)
       case 'setSources':
         return sessionManager.setSessionSources(sessionId, command.sourceSlugs)
+      case 'setProject':
+        return sessionManager.setSessionProject(sessionId, command.projectId)
       case 'showInFinder': {
         const sessionPath = sessionManager.getSessionPath(sessionId)
         if (sessionPath) {
@@ -1602,6 +1604,77 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     const skillsDir = getWorkspaceSkillsPath(workspace.rootPath)
     const skillDir = join(skillsDir, skillSlug)
     await shell.showItemInFolder(skillDir)
+  })
+
+  // ============================================================
+  // Projects (Workspace-scoped)
+  // ============================================================
+
+  // List all projects for a workspace
+  ipcMain.handle(IPC_CHANNELS.PROJECTS_LIST, async (_event, workspaceId: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) {
+      ipcLog.error(`PROJECTS_LIST: Workspace not found: ${workspaceId}`)
+      return []
+    }
+    const { loadWorkspaceProjects } = await import('@craft-agent/shared/projects')
+    return loadWorkspaceProjects(workspace.rootPath)
+  })
+
+  // Get a single project by slug
+  ipcMain.handle(IPC_CHANNELS.PROJECTS_GET, async (_event, workspaceId: string, projectSlug: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) {
+      ipcLog.error(`PROJECTS_GET: Workspace not found: ${workspaceId}`)
+      return null
+    }
+    const { loadProject } = await import('@craft-agent/shared/projects')
+    return loadProject(workspace.rootPath, projectSlug)
+  })
+
+  // Create a new project
+  ipcMain.handle(IPC_CHANNELS.PROJECTS_CREATE, async (_event, workspaceId: string, input: import('../shared/types').CreateProjectInput) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    const { createProject } = await import('@craft-agent/shared/projects')
+    const project = createProject(workspace.rootPath, input)
+    ipcLog.info(`Created project: ${project.name} (${project.slug})`)
+    return project
+  })
+
+  // Update a project
+  ipcMain.handle(IPC_CHANNELS.PROJECTS_UPDATE, async (_event, workspaceId: string, projectSlug: string, updates: import('../shared/types').UpdateProjectInput) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    const { updateProject } = await import('@craft-agent/shared/projects')
+    const updated = updateProject(workspace.rootPath, projectSlug, updates)
+    if (updated) {
+      ipcLog.info(`Updated project: ${projectSlug}`)
+    }
+    return updated
+  })
+
+  // Delete a project
+  ipcMain.handle(IPC_CHANNELS.PROJECTS_DELETE, async (_event, workspaceId: string, projectSlug: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    const { deleteProject } = await import('@craft-agent/shared/projects')
+    const deleted = deleteProject(workspace.rootPath, projectSlug)
+    if (deleted) {
+      ipcLog.info(`Deleted project: ${projectSlug}`)
+    }
+    return deleted
+  })
+
+  // Find project for a given path
+  ipcMain.handle(IPC_CHANNELS.PROJECTS_FIND_FOR_PATH, async (_event, workspaceId: string, path: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) {
+      ipcLog.error(`PROJECTS_FIND_FOR_PATH: Workspace not found: ${workspaceId}`)
+      return null
+    }
+    const { findProjectForPath } = await import('@craft-agent/shared/projects')
+    return findProjectForPath(workspace.rootPath, path)
   })
 
   // ============================================================

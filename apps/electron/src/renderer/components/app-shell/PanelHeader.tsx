@@ -51,6 +51,8 @@ export interface PanelHeaderProps {
   title?: string
   /** Optional badge element (e.g., agent badge) */
   badge?: React.ReactNode
+  /** Optional project badge element (rendered on the left, before title) */
+  projectBadge?: React.ReactNode
   /** Optional dropdown menu content for interactive title (renders chevron when provided) */
   titleMenu?: React.ReactNode
   /** Optional action buttons rendered on the right */
@@ -73,6 +75,7 @@ export interface PanelHeaderProps {
 export function PanelHeader({
   title,
   badge,
+  projectBadge,
   titleMenu,
   actions,
   rightSidebarButton,
@@ -108,7 +111,16 @@ export function PanelHeader({
   const content = (
     <>
       <div className="flex-1 min-w-0 flex items-center select-none">
-        <div className="mx-auto w-fit">
+        <div className="mx-auto w-fit flex items-center gap-1">
+          {/* Project badge centered with title */}
+          {projectBadge && (
+            <>
+              <div className="titlebar-no-drag shrink-0">
+                {projectBadge}
+              </div>
+              <ChevronDown className="h-3 w-3 text-muted-foreground -rotate-90" />
+            </>
+          )}
           {titleMenu ? (
             <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
               {/* Wrapper button for the whole clickable area */}

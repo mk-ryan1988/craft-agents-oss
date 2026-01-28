@@ -170,6 +170,8 @@ interface ManagedSession {
   lastReadMessageId?: string
   // Per-session source selection (slugs of enabled sources)
   enabledSourceSlugs?: string[]
+  // Project ID this session belongs to
+  projectId?: string
   // Working directory for this session (used by agent for bash commands)
   workingDirectory?: string
   // SDK cwd for session storage - set once at creation, never changes.
@@ -621,6 +623,8 @@ export class SessionManager {
             // Shared viewer state - loaded from metadata for persistence across restarts
             sharedUrl: meta.sharedUrl,
             sharedId: meta.sharedId,
+            // Project assignment - loaded from metadata for persistence across restarts
+            projectId: meta.projectId,
           }
 
           this.sessions.set(meta.id, managed)
@@ -654,6 +658,7 @@ export class SessionManager {
         permissionMode: managed.permissionMode,
         todoState: managed.todoState,
         enabledSourceSlugs: managed.enabledSourceSlugs,
+        projectId: managed.projectId,
         workingDirectory: managed.workingDirectory,
         sdkCwd: managed.sdkCwd,
         thinkingLevel: managed.thinkingLevel,
@@ -977,6 +982,7 @@ export class SessionManager {
         workingDirectory: m.workingDirectory,
         model: m.model,
         enabledSourceSlugs: m.enabledSourceSlugs,
+        projectId: m.projectId,
         sharedUrl: m.sharedUrl,
         sharedId: m.sharedId,
         lastMessageRole: m.lastMessageRole,
@@ -1014,6 +1020,7 @@ export class SessionManager {
       model: m.model,
       sessionFolderPath: getSessionStoragePath(m.workspace.rootPath, m.id),
       enabledSourceSlugs: m.enabledSourceSlugs,
+      projectId: m.projectId,
       sharedUrl: m.sharedUrl,
       sharedId: m.sharedId,
       lastMessageRole: m.lastMessageRole,
@@ -1056,6 +1063,7 @@ export class SessionManager {
       managed.tokenUsage = storedSession.tokenUsage
       managed.lastReadMessageId = storedSession.lastReadMessageId
       managed.enabledSourceSlugs = storedSession.enabledSourceSlugs
+      managed.projectId = storedSession.projectId
       managed.sharedUrl = storedSession.sharedUrl
       managed.sharedId = storedSession.sharedId
       // Sync name from disk - ensures title persistence across lazy loading
@@ -1112,6 +1120,7 @@ export class SessionManager {
     const storedSession = createStoredSession(workspaceRootPath, {
       permissionMode: defaultPermissionMode,
       workingDirectory: resolvedWorkingDir,
+      projectId: options?.projectId,
     })
 
     const managed: ManagedSession = {
@@ -1135,6 +1144,7 @@ export class SessionManager {
       messageQueue: [],
       backgroundShellCommands: new Map(),
       messagesLoaded: true,  // New sessions don't need to load messages from disk
+      projectId: options?.projectId,
     }
 
     this.sessions.set(storedSession.id, managed)
@@ -1153,6 +1163,7 @@ export class SessionManager {
       model: managed.model,
       thinkingLevel: defaultThinkingLevel,
       sessionFolderPath: getSessionStoragePath(workspaceRootPath, storedSession.id),
+      projectId: options?.projectId,
     }
   }
 
@@ -1776,6 +1787,47 @@ export class SessionManager {
   getSessionSources(sessionId: string): string[] {
     const managed = this.sessions.get(sessionId)
     return managed?.enabledSourceSlugs ?? []
+  }
+
+  // ============================================
+  // Session Projects
+  // ============================================
+
+  /**
+   * Update session's project assignment
+   * @param sessionId - Session to update
+   * @param projectId - Project ID to assign, or null to remove assignment
+   */
+  async setSessionProject(sessionId: string, projectId: string | null): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) {
+      throw new Error(`Session not found: ${sessionId}`)
+    }
+
+    sessionLog.info(`Setting project for session ${sessionId}: ${projectId ?? 'none'}`)
+
+    // Update session metadata
+    managed.projectId = projectId ?? undefined
+
+    // Persist the session with updated project
+    this.persistSession(managed)
+
+    // Notify renderer of the project change
+    this.sendEvent({
+      type: 'project_changed',
+      sessionId,
+      projectId: projectId ?? undefined,
+    }, managed.workspace.id)
+
+    sessionLog.info(`Session ${sessionId} project updated: ${projectId ?? 'none'}`)
+  }
+
+  /**
+   * Get the project ID for a session
+   */
+  getSessionProject(sessionId: string): string | undefined {
+    const managed = this.sessions.get(sessionId)
+    return managed?.projectId
   }
 
   /**

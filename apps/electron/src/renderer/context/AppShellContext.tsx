@@ -22,6 +22,7 @@ import type {
   LoadedSource,
   LoadedSkill,
   NewChatActionParams,
+  CreateSessionOptions,
 } from '../../shared/types'
 import type { TodoState as TodoStateConfig } from '@/config/todo-states'
 import type { SessionOptions, SessionOptionUpdates } from '../hooks/useSessionOptions'
@@ -54,7 +55,7 @@ export interface AppShellContextType {
   sessionOptions: Map<string, SessionOptions>
 
   // Session callbacks
-  onCreateSession: (workspaceId: string) => Promise<Session>
+  onCreateSession: (workspaceId: string, options?: CreateSessionOptions) => Promise<Session>
   onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[]) => void
   onRenameSession: (sessionId: string, name: string) => void
   onFlagSession: (sessionId: string) => void
@@ -104,6 +105,9 @@ export interface AppShellContextType {
 
   // Source selection callback (per-session) - provided by AppShell component
   onSessionSourcesChange?: (sessionId: string, sourceSlugs: string[]) => void
+
+  // Project assignment callback (per-session) - provided by AppShell component
+  onSessionProjectChange?: (sessionId: string, projectId: string | null) => void
 
   // Chat input ref (for focusing)
   textareaRef?: React.RefObject<RichTextInputHandle>

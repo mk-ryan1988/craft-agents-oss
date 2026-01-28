@@ -27,13 +27,17 @@ import {
   FlagOff,
   MailOpen,
   FolderOpen,
+  FolderGit2,
   Copy,
   Link2Off,
   AppWindow,
   CloudUpload,
   Globe,
   RefreshCw,
+  Check,
+  Plus,
 } from 'lucide-react'
+import type { LoadedProject } from '../../../shared/types'
 import { toast } from 'sonner'
 import { cn, isHexColor } from '@/lib/utils'
 import { useMenuComponents } from '@/components/ui/menu-context'
@@ -57,6 +61,10 @@ export interface SessionMenuProps {
   currentTodoState: TodoStateId
   /** Available todo states */
   todoStates: TodoState[]
+  /** Current project ID (if assigned to a project) */
+  currentProjectId?: string | null
+  /** Available projects for assignment */
+  projects?: LoadedProject[]
   /** Callbacks */
   onRename: () => void
   onFlag: () => void
@@ -65,6 +73,10 @@ export interface SessionMenuProps {
   onTodoStateChange: (state: TodoStateId) => void
   onOpenInNewWindow: () => void
   onDelete: () => void
+  /** Called when project assignment changes (null = remove from project) */
+  onProjectChange?: (projectId: string | null) => void
+  /** Called when user wants to create a new project for this session */
+  onCreateProject?: () => void
 }
 
 /**
@@ -80,6 +92,8 @@ export function SessionMenu({
   hasUnreadMessages,
   currentTodoState,
   todoStates,
+  currentProjectId,
+  projects,
   onRename,
   onFlag,
   onUnflag,
@@ -87,6 +101,8 @@ export function SessionMenu({
   onTodoStateChange,
   onOpenInNewWindow,
   onDelete,
+  onProjectChange,
+  onCreateProject,
 }: SessionMenuProps) {
   // Share handlers
   const handleShare = async () => {
@@ -256,6 +272,55 @@ export function SessionMenu({
           )}
         </SubContent>
       </Sub>
+
+      {/* Project submenu - only show if projects are provided */}
+      {projects && onProjectChange && (
+        <Sub>
+          <SubTrigger>
+            <FolderGit2 className="h-3.5 w-3.5" />
+            <span className="flex-1">Project</span>
+          </SubTrigger>
+          <SubContent>
+            {/* No Project option */}
+            <MenuItem
+              onClick={() => onProjectChange(null)}
+              className={!currentProjectId ? 'bg-foreground/5' : ''}
+            >
+              <span className="h-3.5 w-3.5 flex items-center justify-center shrink-0">
+                {!currentProjectId && <Check className="h-3.5 w-3.5" />}
+              </span>
+              <span className="flex-1 text-muted-foreground">None</span>
+            </MenuItem>
+
+            {projects.length > 0 && <Separator />}
+
+            {/* Project list */}
+            {projects.map((project) => (
+              <MenuItem
+                key={project.config.id}
+                onClick={() => onProjectChange(project.config.id)}
+                className={currentProjectId === project.config.id ? 'bg-foreground/5' : ''}
+              >
+                <span className="h-3.5 w-3.5 flex items-center justify-center shrink-0">
+                  {currentProjectId === project.config.id && <Check className="h-3.5 w-3.5" />}
+                </span>
+                <span className="flex-1 truncate">{project.config.name}</span>
+              </MenuItem>
+            ))}
+
+            {/* Create new project option */}
+            {onCreateProject && (
+              <>
+                <Separator />
+                <MenuItem onClick={onCreateProject}>
+                  <Plus className="h-3.5 w-3.5" />
+                  <span className="flex-1">New Project...</span>
+                </MenuItem>
+              </>
+            )}
+          </SubContent>
+        </Sub>
+      )}
 
       {/* Mark as Unread - only show if session has been read */}
       {!hasUnreadMessages && hasMessages && (

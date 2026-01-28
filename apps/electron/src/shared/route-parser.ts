@@ -13,6 +13,7 @@ import type {
   NavigationState,
   ChatFilter,
   SourceFilter,
+  ProjectFilter,
   SettingsSubpage,
   RightSidebarPanel,
 } from './types'
@@ -34,7 +35,7 @@ export interface ParsedRoute {
 // Compound Route Types (new format)
 // =============================================================================
 
-export type NavigatorType = 'chats' | 'sources' | 'skills' | 'settings'
+export type NavigatorType = 'chats' | 'sources' | 'skills' | 'projects' | 'settings'
 
 export interface ParsedCompoundRoute {
   /** The navigator type */
@@ -43,6 +44,8 @@ export interface ParsedCompoundRoute {
   chatFilter?: ChatFilter
   /** Source filter (only for sources navigator) */
   sourceFilter?: SourceFilter
+  /** Project filter (only for projects navigator) */
+  projectFilter?: ProjectFilter
   /** Details page info (null for empty state) */
   details: {
     type: string
@@ -58,7 +61,7 @@ export interface ParsedCompoundRoute {
  * Known prefixes that indicate a compound route
  */
 const COMPOUND_ROUTE_PREFIXES = [
-  'allChats', 'flagged', 'state', 'sources', 'skills', 'settings'
+  'allChats', 'flagged', 'state', 'sources', 'skills', 'projects', 'settings'
 ]
 
 /**
@@ -155,6 +158,45 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
     return null
   }
 
+  // Projects navigator - shows sessions filtered by project
+  if (first === 'projects') {
+    // projects - all project sessions
+    if (segments.length === 1) {
+      return { navigator: 'projects', projectFilter: { kind: 'allProjects' }, details: null }
+    }
+
+    // projects/session/{sessionId} - all projects, specific session selected
+    if (segments[1] === 'session' && segments[2]) {
+      return {
+        navigator: 'projects',
+        projectFilter: { kind: 'allProjects' },
+        details: { type: 'session', id: segments[2] },
+      }
+    }
+
+    // projects/project/{projectId} - specific project, no session
+    if (segments[1] === 'project' && segments[2]) {
+      const projectId = segments[2]
+
+      // projects/project/{projectId}/session/{sessionId}
+      if (segments[3] === 'session' && segments[4]) {
+        return {
+          navigator: 'projects',
+          projectFilter: { kind: 'project', projectId },
+          details: { type: 'session', id: segments[4] },
+        }
+      }
+
+      return {
+        navigator: 'projects',
+        projectFilter: { kind: 'project', projectId },
+        details: null,
+      }
+    }
+
+    return null
+  }
+
   // Chats navigator (allChats, flagged, state)
   let chatFilter: ChatFilter
   let detailsStartIndex: number
@@ -220,6 +262,19 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
   if (parsed.navigator === 'skills') {
     if (!parsed.details) return 'skills'
     return `skills/skill/${parsed.details.id}`
+  }
+
+  if (parsed.navigator === 'projects') {
+    // Build base from filter
+    let base = 'projects'
+    if (parsed.projectFilter?.kind === 'project') {
+      base = `projects/project/${parsed.projectFilter.projectId}`
+    }
+    // Add session details if selected
+    if (parsed.details) {
+      return `${base}/session/${parsed.details.id}`
+    }
+    return base
   }
 
   // Chats navigator
@@ -326,6 +381,14 @@ function convertCompoundToViewRoute(compound: ParsedCompoundRoute): ParsedRoute 
       return { type: 'view', name: 'skills', params: {} }
     }
     return { type: 'view', name: 'skill-info', id: compound.details.id, params: {} }
+  }
+
+  // Projects
+  if (compound.navigator === 'projects') {
+    if (!compound.details) {
+      return { type: 'view', name: 'projects', params: {} }
+    }
+    return { type: 'view', name: 'project-info', id: compound.details.id, params: {} }
   }
 
   // Chats
@@ -443,6 +506,23 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     }
   }
 
+  // Projects - now shows sessions filtered by project
+  if (compound.navigator === 'projects') {
+    const filter = compound.projectFilter || { kind: 'allProjects' as const }
+    if (compound.details) {
+      return {
+        navigator: 'projects',
+        filter,
+        details: { type: 'session', sessionId: compound.details.id },
+      }
+    }
+    return {
+      navigator: 'projects',
+      filter,
+      details: null,
+    }
+  }
+
   // Chats
   const filter = compound.chatFilter || { kind: 'allChats' as const }
   if (compound.details) {
@@ -505,6 +585,17 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
         }
       }
       return { navigator: 'skills', details: null }
+    case 'projects':
+      return { navigator: 'projects', filter: { kind: 'allProjects' }, details: null }
+    case 'project-info':
+      if (parsed.id) {
+        return {
+          navigator: 'projects',
+          filter: { kind: 'project', projectId: parsed.id },
+          details: null,
+        }
+      }
+      return { navigator: 'projects', filter: { kind: 'allProjects' }, details: null }
     case 'chat':
       if (parsed.id) {
         // Reconstruct filter from params
@@ -573,6 +664,19 @@ export function buildRouteFromNavigationState(state: NavigationState): string {
       return `skills/skill/${state.details.skillSlug}`
     }
     return 'skills'
+  }
+
+  if (state.navigator === 'projects') {
+    // Build base from filter
+    let base = 'projects'
+    if (state.filter.kind === 'project') {
+      base = `projects/project/${state.filter.projectId}`
+    }
+    // Add session details if selected
+    if (state.details) {
+      return `${base}/session/${state.details.sessionId}`
+    }
+    return base
   }
 
   // Chats

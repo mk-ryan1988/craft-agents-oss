@@ -63,7 +63,7 @@ export function ShikiDiffViewer({
   filePath = 'file',
   language,
   diffStyle = 'unified',
-  theme = 'light',
+  theme: themeProp, // Deprecated: theme is now auto-detected from DOM
   onReady,
   className,
 }: ShikiDiffViewerProps) {
@@ -72,6 +72,9 @@ export function ShikiDiffViewer({
 
   // Get shiki theme from context (matches app's selected theme)
   const contextShikiTheme = useShikiTheme()
+
+  // Detect dark mode from DOM if no theme prop provided
+  const isDark = themeProp ? themeProp === 'dark' : document.documentElement.classList.contains('dark')
 
   // Resolve language
   const resolvedLang = useMemo(() => {
@@ -99,7 +102,7 @@ export function ShikiDiffViewer({
   // Diff options - use context theme if available, otherwise fall back to pierre themes
   const options: FileDiffProps<undefined>['options'] = useMemo(() => {
     // Use the app's configured shiki theme from context, or fall back to pierre themes
-    const shikiTheme = contextShikiTheme || (theme === 'dark' ? 'pierre-dark' : 'pierre-light')
+    const shikiTheme = contextShikiTheme || (isDark ? 'pierre-dark' : 'pierre-light')
 
     return {
       theme: shikiTheme,
@@ -109,9 +112,9 @@ export function ShikiDiffViewer({
       lineDiffType: 'word',
       overflow: 'scroll',
       disableFileHeader: true, // We handle headers ourselves
-      themeType: theme === 'dark' ? 'dark' : 'light',
+      themeType: isDark ? 'dark' : 'light',
     }
-  }, [contextShikiTheme, theme, diffStyle])
+  }, [contextShikiTheme, isDark, diffStyle])
 
   // Call onReady after first render
   useEffect(() => {
@@ -126,17 +129,13 @@ export function ShikiDiffViewer({
     }
   }, [onReady, original, modified, fileDiff])
 
-  // Background color to match themes
-  const backgroundColor = theme === 'dark' ? '#1e1e1e' : '#ffffff'
-
   return (
     <div
       className={cn(
-        'h-full w-full overflow-auto transition-opacity duration-200',
+        'h-full w-full overflow-auto transition-opacity duration-200 bg-background text-foreground',
         className
       )}
       style={{
-        backgroundColor,
         fontFamily: '"JetBrains Mono", monospace',
         fontSize: 13,
         lineHeight: 1.6,

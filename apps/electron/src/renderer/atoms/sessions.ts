@@ -22,6 +22,8 @@ export interface SessionMeta {
   /** Preview of first user message (for title fallback) */
   preview?: string
   workspaceId: string
+  /** Project ID this session belongs to (if assigned) */
+  projectId?: string
   lastMessageAt?: number
   isProcessing?: boolean
   isFlagged?: boolean
@@ -69,6 +71,7 @@ export function extractSessionMeta(session: Session): SessionMeta {
     name: session.name,
     preview: session.preview,
     workspaceId: session.workspaceId,
+    projectId: session.projectId,
     lastMessageAt: session.lastMessageAt,
     isProcessing: session.isProcessing,
     isFlagged: session.isFlagged,

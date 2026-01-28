@@ -55,6 +55,8 @@ export {
   listFlaggedSessions,
   listCompletedSessions,
   listInboxSessions,
+  listSessionsByProject,
+  listUnassignedSessions,
   // Plan storage
   formatPlanAsMarkdown,
   parsePlanFromMarkdown,
