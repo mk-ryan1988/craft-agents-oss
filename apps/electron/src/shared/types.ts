@@ -256,6 +256,8 @@ export interface Session {
   id: string
   workspaceId: string
   workspaceName: string
+  /** Project ID this session belongs to (if assigned) */
+  projectId?: string
   name?: string  // User-defined or AI-generated session name
   /** Preview of first user message (from JSONL header, for lazy-loaded sessions) */
   preview?: string
@@ -325,6 +327,8 @@ export interface CreateSessionOptions {
    * - Absolute path string: Use this specific path
    */
   workingDirectory?: string | 'user_default' | 'none'
+  /** Project ID to assign this session to */
+  projectId?: string
 }
 
 // Events sent from main to renderer
