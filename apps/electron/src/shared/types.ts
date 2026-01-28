@@ -1037,6 +1037,17 @@ export interface SkillsNavigationState {
 }
 
 /**
+ * Projects navigation state - shows ProjectsListPanel in navigator
+ */
+export interface ProjectsNavigationState {
+  navigator: 'projects'
+  /** Selected project details, or null for empty state */
+  details: { type: 'project'; projectSlug: string } | null
+  /** Optional right sidebar panel state */
+  rightSidebar?: RightSidebarPanel
+}
+
+/**
  * Unified navigation state - single source of truth for all 3 panels
  *
  * From this state we can derive:
@@ -1049,6 +1060,7 @@ export type NavigationState =
   | SourcesNavigationState
   | SettingsNavigationState
   | SkillsNavigationState
+  | ProjectsNavigationState
 
 /**
  * Type guard to check if state is chats navigation
@@ -1077,6 +1089,13 @@ export const isSettingsNavigation = (
 export const isSkillsNavigation = (
   state: NavigationState
 ): state is SkillsNavigationState => state.navigator === 'skills'
+
+/**
+ * Type guard to check if state is projects navigation
+ */
+export const isProjectsNavigation = (
+  state: NavigationState
+): state is ProjectsNavigationState => state.navigator === 'projects'
 
 /**
  * Default navigation state - allChats with no selection
@@ -1110,6 +1129,12 @@ export const getNavigationStateKey = (state: NavigationState): string => {
   }
   if (state.navigator === 'settings') {
     return `settings:${state.subpage}`
+  }
+  if (state.navigator === 'projects') {
+    if (state.details) {
+      return `projects/project/${state.details.projectSlug}`
+    }
+    return 'projects'
   }
   // Chats
   const f = state.filter

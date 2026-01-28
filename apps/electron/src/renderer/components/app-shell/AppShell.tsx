@@ -20,6 +20,7 @@ import {
   Inbox,
   Globe,
   FolderOpen,
+  FolderGit2,
   HelpCircle,
   ExternalLink,
 } from "lucide-react"
@@ -88,12 +89,14 @@ import {
   isSourcesNavigation,
   isSettingsNavigation,
   isSkillsNavigation,
+  isProjectsNavigation,
   type NavigationState,
   type ChatFilter,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
 import { SourcesListPanel } from "./SourcesListPanel"
 import { SkillsListPanel } from "./SkillsListPanel"
+import { ProjectsListPanel } from "./ProjectsListPanel"
 import { PanelHeader } from "./PanelHeader"
 import { EditPopover, getEditConfig } from "@/components/ui/EditPopover"
 import { getDocUrl } from "@craft-agent/shared/docs/doc-links"
@@ -724,6 +727,59 @@ function AppShellContent({
     return result
   }, [workspaceSessionMetas, chatFilter, listFilter])
 
+  // Compute session counts per project
+  const projectSessionCounts = React.useMemo(() => {
+    const counts = new Map<string, number>()
+    filteredSessionMetas.forEach((meta) => {
+      if (meta.projectId) {
+        counts.set(meta.projectId, (counts.get(meta.projectId) || 0) + 1)
+      }
+    })
+    return counts
+  }, [filteredSessionMetas])
+
+  // Handle selecting a project from the list
+  const handleProjectSelect = React.useCallback((project: LoadedProject | null) => {
+    if (!activeWorkspaceId) return
+    if (project) {
+      navigate(routes.view.projects(project.config.slug))
+    } else {
+      navigate(routes.view.projects())
+    }
+  }, [activeWorkspaceId, navigate])
+
+  // Handle renaming a project
+  const handleProjectRename = React.useCallback(async (projectSlug: string, name: string) => {
+    if (!activeWorkspaceId) return
+    try {
+      await window.electronAPI.updateProject(activeWorkspaceId, projectSlug, { name })
+      toast.success('Project renamed')
+    } catch (err) {
+      console.error('[AppShell] Failed to rename project:', err)
+      toast.error('Failed to rename project')
+    }
+  }, [activeWorkspaceId])
+
+  // Handle deleting a project
+  const handleProjectDelete = React.useCallback(async (projectSlug: string) => {
+    if (!activeWorkspaceId) return
+    try {
+      await window.electronAPI.deleteProject(activeWorkspaceId, projectSlug)
+      toast.success('Project deleted')
+      // Navigate back to projects list
+      navigate(routes.view.projects())
+    } catch (err) {
+      console.error('[AppShell] Failed to delete project:', err)
+      toast.error('Failed to delete project')
+    }
+  }, [activeWorkspaceId, navigate])
+
+  // Handle opening project folder in Finder
+  const handleOpenProjectInFinder = React.useCallback((project: LoadedProject) => {
+    // Use openUrl with file:// protocol to open folder in Finder
+    window.electronAPI.openUrl(`file://${project.config.rootPath}`)
+  }, [])
+
   // Ensure session messages are loaded when selected
   React.useEffect(() => {
     if (session.selected) {
@@ -850,6 +906,11 @@ function AppShellContent({
     navigate(routes.view.skills())
   }, [])
 
+  // Handler for projects view
+  const handleProjectsClick = useCallback(() => {
+    navigate(routes.view.projects())
+  }, [])
+
   // Handler for settings view
   const handleSettingsClick = useCallback((subpage: SettingsSubpage = 'app') => {
     navigate(routes.view.settings(subpage))
@@ -947,13 +1008,16 @@ function AppShellContent({
       result.push({ id: `nav:state:${state.id}`, type: 'nav', action: () => handleTodoStateClick(state.id) })
     }
 
-    // 2.5. Sources nav item
+    // 2.5. Projects nav item
+    result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
+
+    // 2.6. Sources nav item
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
 
-    // 2.6. Skills nav item
+    // 2.7. Skills nav item
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
 
-    // 2.7. Settings nav item
+    // 2.8. Settings nav item
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick('app') })
 
     return result
@@ -1229,6 +1293,14 @@ function AppShellContent({
                           },
                         },
                       ],
+                    },
+                    {
+                      id: "nav:projects",
+                      title: "Projects",
+                      label: String(projects.length),
+                      icon: FolderGit2,
+                      variant: isProjectsNavigation(navState) ? "default" : "ghost",
+                      onClick: handleProjectsClick,
                     },
                     {
                       id: "nav:sources",
@@ -1584,6 +1656,18 @@ function AppShellContent({
                 onSkillClick={handleSkillSelect}
                 onDeleteSkill={handleDeleteSkill}
                 selectedSkillSlug={isSkillsNavigation(navState) && navState.details ? navState.details.skillSlug : null}
+              />
+            )}
+            {isProjectsNavigation(navState) && activeWorkspaceId && (
+              /* Projects List */
+              <ProjectsListPanel
+                projects={projects}
+                selectedProjectId={isProjectsNavigation(navState) && navState.details ? navState.details.projectSlug : null}
+                sessionCountByProject={projectSessionCounts}
+                onProjectSelect={handleProjectSelect}
+                onProjectRename={handleProjectRename}
+                onProjectDelete={handleProjectDelete}
+                onOpenProjectInFinder={handleOpenProjectInFinder}
               />
             )}
             {isSettingsNavigation(navState) && (

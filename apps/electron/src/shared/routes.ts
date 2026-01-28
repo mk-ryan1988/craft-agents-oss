@@ -136,6 +136,12 @@ export const routes = {
         ? `skills/skill/${skillSlug}` as const
         : 'skills' as const,
 
+    /** Projects view (projects navigator) */
+    projects: (projectSlug?: string) =>
+      projectSlug
+        ? `projects/project/${projectSlug}` as const
+        : 'projects' as const,
+
     /** Settings view (settings navigator) */
     settings: (subpage?: 'app' | 'workspace' | 'permissions' | 'shortcuts' | 'preferences') =>
       subpage && subpage !== 'app'
