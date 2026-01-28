@@ -523,8 +523,10 @@ function AppShellContent({
       { key: 'o', cmd: true, action: () => setIsSidebarVisible(v => !v) },
       // Right sidebar (chat info) toggle
       { key: 'b', cmd: true, action: () => setIsRightSidebarVisible(v => !v) },
-      // New chat
-      { key: 'n', cmd: true, action: () => handleNewChat(true) },
+      // New chat (context-aware: creates in current project if in project view)
+      { key: 'n', cmd: true, action: () => handleNewChat(false) },
+      // New unassigned chat (always creates without project, even when in project view)
+      { key: 'n', cmd: true, shift: true, action: () => handleNewChat(true) },
       // Settings
       { key: ',', cmd: true, action: onOpenSettings },
       // History navigation
@@ -989,13 +991,27 @@ function AppShellContent({
   }, [])
 
   // Create a new chat and select it
-  const handleNewChat = useCallback(async (_useCurrentAgent: boolean = true) => {
+  // If forceUnassigned is true, creates an unassigned chat regardless of context
+  // Otherwise, if in a specific project context, assigns the chat to that project
+  const handleNewChat = useCallback(async (forceUnassigned: boolean = false) => {
     if (!activeWorkspace) return
 
-    const newSession = await onCreateSession(activeWorkspace.id)
-    // Navigate to the new session via central routing
-    navigate(routes.view.allChats(newSession.id))
-  }, [activeWorkspace, onCreateSession])
+    // Check if we're in a specific project context (not "All Projects")
+    const inSpecificProject = isProjectsNavigation(navState) &&
+      projectFilter?.kind === 'project' &&
+      projectFilter.projectId
+
+    // Create session with project assignment if in project context and not forcing unassigned
+    const projectId = (!forceUnassigned && inSpecificProject) ? projectFilter.projectId : undefined
+    const newSession = await onCreateSession(activeWorkspace.id, projectId ? { projectId } : undefined)
+
+    // Navigate to the new session - stay in project context if we created a project chat
+    if (projectId) {
+      navigate(routes.view.projects(projectId, newSession.id))
+    } else {
+      navigate(routes.view.allChats(newSession.id))
+    }
+  }, [activeWorkspace, onCreateSession, navState, projectFilter, navigate])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
@@ -1021,13 +1037,13 @@ function AppShellContent({
     }
   }, [activeWorkspace])
 
-  // Respond to menu bar "New Chat" trigger
+  // Respond to menu bar "New Chat" trigger (context-aware)
   const menuTriggerRef = useRef(menuNewChatTrigger)
   useEffect(() => {
     // Skip initial render
     if (menuTriggerRef.current === menuNewChatTrigger) return
     menuTriggerRef.current = menuNewChatTrigger
-    handleNewChat(true)
+    handleNewChat(false)
   }, [menuNewChatTrigger, handleNewChat])
 
   // Unified sidebar items: nav buttons only (agents system removed)
@@ -1217,7 +1233,7 @@ function AppShellContent({
           style={{ width: sidebarWidth - 86 }}
         >
           <AppMenu
-            onNewChat={() => handleNewChat(true)}
+            onNewChat={() => handleNewChat(false)}
             onOpenSettings={onOpenSettings}
             onOpenKeyboardShortcuts={onOpenKeyboardShortcuts}
             onOpenStoredUserPreferences={onOpenStoredUserPreferences}
@@ -1262,7 +1278,7 @@ function AppShellContent({
                     <ContextMenuTrigger asChild>
                       <Button
                         variant="ghost"
-                        onClick={() => handleNewChat(true)}
+                        onClick={() => handleNewChat(false)}
                         className="w-full justify-start gap-2 py-[7px] px-2 text-[13px] font-normal rounded-[6px] shadow-minimal bg-background"
                         data-tutorial="new-chat-button"
                       >
