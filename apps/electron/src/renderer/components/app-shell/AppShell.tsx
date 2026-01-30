@@ -549,8 +549,14 @@ function AppShellContent({
   type FilterEntry = Record<string, FilterMode> // id → mode
   type ViewFiltersMap = Record<string, { statuses: FilterEntry, labels: FilterEntry }>
 
-  // Compute a stable key for the current chat filter view
+  // Compute a stable key for the current chat/project filter view
   const chatFilterKey = useMemo(() => {
+    // Handle project filter (projects navigator)
+    if (projectFilter) {
+      if (projectFilter.kind === 'allProjects') return 'projects:all'
+      return `project:${projectFilter.projectId}`
+    }
+    // Handle chat filter (chats navigator)
     if (!chatFilter) return null
     switch (chatFilter.kind) {
       case 'allChats': return 'allChats'
@@ -560,7 +566,7 @@ function AppShellContent({
       case 'view': return `view:${chatFilter.viewId}`
       default: return 'allChats'
     }
-  }, [chatFilter])
+  }, [chatFilter, projectFilter])
 
   const [viewFiltersMap, setViewFiltersMap] = React.useState<ViewFiltersMap>(() => {
     const saved = storage.get<ViewFiltersMap>(storage.KEYS.viewFilters, {})
@@ -1213,6 +1219,55 @@ function AppShellContent({
     return counts
   }, [sources])
 
+  // Helper to apply secondary filters (status + labels) consistently across all views
+  const applySecondaryFilters = useCallback(
+    (sessions: SessionMeta[]): SessionMeta[] => {
+      let result = sessions
+
+      // Apply status filter with include/exclude support
+      if (listFilter.size > 0) {
+        const statusIncludes = new Set<TodoStateId>()
+        const statusExcludes = new Set<TodoStateId>()
+        for (const [id, mode] of listFilter) {
+          if (mode === 'include') statusIncludes.add(id)
+          else statusExcludes.add(id)
+        }
+        if (statusIncludes.size > 0) {
+          result = result.filter(s => statusIncludes.has((s.todoState || 'todo') as TodoStateId))
+        }
+        if (statusExcludes.size > 0) {
+          result = result.filter(s => !statusExcludes.has((s.todoState || 'todo') as TodoStateId))
+        }
+      }
+
+      // Apply label filter with include/exclude and descendant expansion
+      if (labelFilter.size > 0) {
+        const labelIncludes = new Set<string>()
+        const labelExcludes = new Set<string>()
+        for (const [id, mode] of labelFilter) {
+          const ids = [id, ...getDescendantIds(labelConfigs, id)]
+          for (const expandedId of ids) {
+            if (mode === 'include') labelIncludes.add(expandedId)
+            else labelExcludes.add(expandedId)
+          }
+        }
+        if (labelIncludes.size > 0) {
+          result = result.filter(s =>
+            s.labels?.some(l => labelIncludes.has(extractLabelId(l)))
+          )
+        }
+        if (labelExcludes.size > 0) {
+          result = result.filter(s =>
+            !s.labels?.some(l => labelExcludes.has(extractLabelId(l)))
+          )
+        }
+      }
+
+      return result
+    },
+    [listFilter, labelFilter, labelConfigs]
+  )
+
   // Filter session metadata based on sidebar mode and chat/project filter
   const filteredSessionMetas = useMemo(() => {
     // Handle project filter (projects navigator)
@@ -1225,11 +1280,8 @@ function AppShellContent({
         // Show sessions for specific project
         result = workspaceSessionMetas.filter(s => s.projectId === projectFilter.projectId)
       }
-      // Apply secondary filter by todo states if any are selected
-      if (listFilter.size > 0) {
-        result = result.filter(s => listFilter.has((s.todoState || 'todo') as TodoStateId))
-      }
-      return result
+      // Apply secondary filters (status + labels)
+      return applySecondaryFilters(result)
     }
 
     // Handle chat filter (chats navigator)
@@ -1282,51 +1334,9 @@ function AppShellContent({
         result = workspaceSessionMetas
     }
 
-    // Apply secondary filters (status + labels, AND-ed together) in ALL views.
-    // These layer on top of the primary chatFilter to allow further narrowing.
-    // Each filter supports include/exclude modes:
-    //   - Includes: if any exist, only matching items pass
-    //   - Excludes: matching items are removed (applied after includes)
-    if (listFilter.size > 0) {
-      const statusIncludes = new Set<TodoStateId>()
-      const statusExcludes = new Set<TodoStateId>()
-      for (const [id, mode] of listFilter) {
-        if (mode === 'include') statusIncludes.add(id)
-        else statusExcludes.add(id)
-      }
-      if (statusIncludes.size > 0) {
-        result = result.filter(s => statusIncludes.has((s.todoState || 'todo') as TodoStateId))
-      }
-      if (statusExcludes.size > 0) {
-        result = result.filter(s => !statusExcludes.has((s.todoState || 'todo') as TodoStateId))
-      }
-    }
-    // Filter by labels — supports include/exclude with descendant expansion
-    if (labelFilter.size > 0) {
-      const labelIncludes = new Set<string>()
-      const labelExcludes = new Set<string>()
-      for (const [id, mode] of labelFilter) {
-        // Expand to include descendant label IDs
-        const ids = [id, ...getDescendantIds(labelConfigs, id)]
-        for (const expandedId of ids) {
-          if (mode === 'include') labelIncludes.add(expandedId)
-          else labelExcludes.add(expandedId)
-        }
-      }
-      if (labelIncludes.size > 0) {
-        result = result.filter(s =>
-          s.labels?.some(l => labelIncludes.has(extractLabelId(l)))
-        )
-      }
-      if (labelExcludes.size > 0) {
-        result = result.filter(s =>
-          !s.labels?.some(l => labelExcludes.has(extractLabelId(l)))
-        )
-      }
-    }
-
-    return result
-  }, [workspaceSessionMetas, chatFilter, projectFilter, listFilter, labelFilter, labelConfigs])
+    // Apply secondary filters (status + labels)
+    return applySecondaryFilters(result)
+  }, [workspaceSessionMetas, chatFilter, projectFilter, applySecondaryFilters])
 
   // Compute session counts per project (from all workspace sessions, not filtered)
   const projectSessionCounts = React.useMemo(() => {
@@ -3002,6 +3012,8 @@ function AppShellContent({
                 todoStates={todoStates}
                 projects={projects}
                 onProjectChange={handleSessionProjectChange}
+                labels={labelConfigs}
+                onLabelsChange={handleSessionLabelsChange}
               />
             )}
             {isSettingsNavigation(navState) && (
