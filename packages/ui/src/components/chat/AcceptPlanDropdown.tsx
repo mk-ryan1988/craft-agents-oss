@@ -1,6 +1,5 @@
 import * as React from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import * as ReactDOM from 'react-dom'
+import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu'
 import { Check, ChevronDown } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -12,6 +11,8 @@ import { cn } from '../../lib/utils'
  * 2. Accept & Compact - Summarize conversation first, then execute
  *
  * The compact option is useful when context is running low after a long planning session.
+ *
+ * Uses Radix DropdownMenu for proper positioning via Radix Popper.
  */
 
 interface AcceptPlanDropdownProps {
@@ -28,125 +29,11 @@ export function AcceptPlanDropdown({
   onAcceptWithCompact,
   className,
 }: AcceptPlanDropdownProps) {
-  const [isOpen, setIsOpen] = useState(false)
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null)
-  const triggerRef = useRef<HTMLDivElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
-
-  // Calculate menu position relative to trigger
-  // Prefers below the button, falls back to above if insufficient space
-  const updatePosition = useCallback(() => {
-    if (!triggerRef.current) return
-
-    const rect = triggerRef.current.getBoundingClientRect()
-    const menuWidth = 280
-    const menuHeight = 120 // Approximate height for 2 items with subtitles
-    const gap = 4
-
-    // Check if there's enough space below the button
-    const spaceBelow = window.innerHeight - rect.bottom
-    const top = spaceBelow >= menuHeight + gap
-      ? rect.bottom + gap  // Position below
-      : rect.top - menuHeight - gap  // Position above
-
-    let left = rect.right - menuWidth
-    // Keep menu within viewport horizontally
-    if (left < 8) left = 8
-    if (left + menuWidth > window.innerWidth - 8) {
-      left = window.innerWidth - menuWidth - 8
-    }
-
-    setPosition({ top, left })
-  }, [])
-
-  const handleToggle = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
-
-    if (!isOpen) {
-      // Calculate position before opening
-      if (triggerRef.current) {
-        const rect = triggerRef.current.getBoundingClientRect()
-        const menuWidth = 280
-        const menuHeight = 120
-        const gap = 4
-        // Prefer below, fall back to above if no space
-        const spaceBelow = window.innerHeight - rect.bottom
-        const top = spaceBelow >= menuHeight + gap
-          ? rect.bottom + gap
-          : rect.top - menuHeight - gap
-        let left = rect.right - menuWidth
-        if (left < 8) left = 8
-        if (left + menuWidth > window.innerWidth - 8) {
-          left = window.innerWidth - menuWidth - 8
-        }
-        setPosition({ top, left })
-      }
-    }
-    setIsOpen(prev => !prev)
-  }, [isOpen])
-
-  const handleClose = useCallback(() => {
-    setIsOpen(false)
-  }, [])
-
-  // Handle option selection
-  const handleSelectAccept = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
-    handleClose()
-    onAccept()
-  }, [handleClose, onAccept])
-
-  const handleSelectCompact = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
-    handleClose()
-    onAcceptWithCompact()
-  }, [handleClose, onAcceptWithCompact])
-
-  // Update position when opening
-  useEffect(() => {
-    if (isOpen) {
-      updatePosition()
-    }
-  }, [isOpen, updatePosition])
-
-  // Click outside detection
-  useEffect(() => {
-    if (!isOpen) return
-
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        menuRef.current &&
-        !menuRef.current.contains(e.target as Node) &&
-        triggerRef.current &&
-        !triggerRef.current.contains(e.target as Node)
-      ) {
-        handleClose()
-      }
-    }
-
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose()
-      }
-    }
-
-    document.addEventListener('mousedown', handleClickOutside)
-    document.addEventListener('keydown', handleEscape)
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-      document.removeEventListener('keydown', handleEscape)
-    }
-  }, [isOpen, handleClose])
+  const [isOpen, setIsOpen] = React.useState(false)
 
   return (
-    <>
-      {/* Trigger button - matches existing Accept Plan button styling */}
-      <div
-        ref={triggerRef}
-        onClick={handleToggle}
-        className="inline-flex"
-      >
+    <DropdownMenuPrimitive.Root open={isOpen} onOpenChange={setIsOpen}>
+      <DropdownMenuPrimitive.Trigger asChild>
         <button
           type="button"
           className={cn(
@@ -163,25 +50,26 @@ export function AcceptPlanDropdown({
             isOpen && "rotate-180"
           )} />
         </button>
-      </div>
+      </DropdownMenuPrimitive.Trigger>
 
-      {/* Dropdown menu - rendered via portal */}
-      {isOpen && position && ReactDOM.createPortal(
-        <div
-          ref={menuRef}
+      <DropdownMenuPrimitive.Portal>
+        <DropdownMenuPrimitive.Content
+          sideOffset={4}
+          align="end"
           className={cn(
-            "fixed z-50 min-w-[280px] p-1.5",
+            "z-dropdown min-w-[280px] p-1.5",
             "bg-background rounded-[8px] shadow-strong border border-border/50",
-            "animate-in fade-in-0 zoom-in-95 duration-100"
+            "data-[state=open]:animate-in data-[state=closed]:animate-out",
+            "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+            "data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
+            "data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2"
           )}
-          style={{ top: position.top, left: position.left }}
         >
           {/* Option 1: Accept (execute immediately) */}
-          <button
-            type="button"
-            onClick={handleSelectAccept}
+          <DropdownMenuPrimitive.Item
+            onSelect={() => onAccept()}
             className={cn(
-              "flex flex-col w-full px-3 py-2 text-left rounded-[6px]",
+              "flex flex-col w-full px-3 py-2 text-left rounded-[6px] cursor-default",
               "hover:bg-foreground/[0.05] focus:bg-foreground/[0.05] focus:outline-none",
               "transition-colors"
             )}
@@ -190,14 +78,13 @@ export function AcceptPlanDropdown({
             <span className="text-xs text-muted-foreground">
               Execute the plan immediately
             </span>
-          </button>
+          </DropdownMenuPrimitive.Item>
 
           {/* Option 2: Accept & Compact */}
-          <button
-            type="button"
-            onClick={handleSelectCompact}
+          <DropdownMenuPrimitive.Item
+            onSelect={() => onAcceptWithCompact()}
             className={cn(
-              "flex flex-col w-full px-3 py-2 text-left rounded-[6px]",
+              "flex flex-col w-full px-3 py-2 text-left rounded-[6px] cursor-default",
               "hover:bg-foreground/[0.05] focus:bg-foreground/[0.05] focus:outline-none",
               "transition-colors"
             )}
@@ -206,10 +93,9 @@ export function AcceptPlanDropdown({
             <span className="text-xs text-muted-foreground">
               Works best for complex, longer plans
             </span>
-          </button>
-        </div>,
-        document.body
-      )}
-    </>
+          </DropdownMenuPrimitive.Item>
+        </DropdownMenuPrimitive.Content>
+      </DropdownMenuPrimitive.Portal>
+    </DropdownMenuPrimitive.Root>
   )
 }
