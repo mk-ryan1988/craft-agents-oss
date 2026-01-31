@@ -180,6 +180,8 @@ export interface SessionScopedToolCallbacks {
    * 5. Agent resumes and processes the result
    */
   onAuthRequest?: (request: AuthRequest) => void;
+  /** Called when the working directory should be changed */
+  onWorkingDirectoryChange?: (path: string) => void;
 }
 
 /**
@@ -339,6 +341,87 @@ Brief description of what this plan accomplishes.
         content: [{
           type: 'text' as const,
           text: 'Plan submitted for review. Waiting for user feedback.',
+        }],
+        isError: false,
+      };
+    }
+  );
+}
+
+// ============================================================
+// Set Working Directory Tool
+// ============================================================
+
+/**
+ * Create a session-scoped session_set_working_directory tool.
+ * Allows the agent to change the session's working directory.
+ */
+export function createSetWorkingDirectoryTool(sessionId: string) {
+  return tool(
+    'session_set_working_directory',
+    `Change the session's working directory.
+
+Use this to switch the working directory to a different path, such as after creating a git worktree.
+
+**Parameters:**
+- \`path\`: Absolute path to the new working directory
+
+**Returns:** Confirmation of the directory change.
+
+**IMPORTANT:** Only use this tool when:
+1. A skill explicitly instructs you to (e.g., /worktree)
+2. The user explicitly asks to change the working directory
+
+Do NOT use this tool proactively or as part of other workflows unless the user requests it.`,
+    {
+      path: z.string().describe('Absolute path to the new working directory'),
+    },
+    async (args) => {
+      debug('[SetWorkingDirectory] Called with path:', args.path);
+
+      // Verify the path exists and is a directory
+      if (!existsSync(args.path)) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Error: Path does not exist: ${args.path}`,
+          }],
+          isError: true,
+        };
+      }
+
+      const stats = statSync(args.path);
+      if (!stats.isDirectory()) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Error: Path is not a directory: ${args.path}`,
+          }],
+          isError: true,
+        };
+      }
+
+      // Get callbacks and notify
+      const callbacks = getSessionScopedToolCallbacks(sessionId);
+
+      if (callbacks?.onWorkingDirectoryChange) {
+        callbacks.onWorkingDirectoryChange(args.path);
+        debug('[SetWorkingDirectory] Callback completed');
+      } else {
+        debug('[SetWorkingDirectory] No callback registered for session');
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Error: Unable to change working directory - no handler registered.`,
+          }],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Working directory changed to: ${args.path}`,
         }],
         isError: false,
       };
@@ -2016,6 +2099,8 @@ export function getSessionScopedTools(sessionId: string, workspaceRootPath: stri
       version: '1.0.0',
       tools: [
         createSubmitPlanTool(sessionId),
+        // Working directory tool - enabled via skill alwaysAllow (e.g., /worktree)
+        createSetWorkingDirectoryTool(sessionId),
         // Config validation tool
         createConfigValidateTool(sessionId, workspaceRootPath),
         // Skill validation tool

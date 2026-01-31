@@ -440,6 +440,9 @@ export class CraftAgent {
   // 5. Agent resumes and processes the result
   public onAuthRequest: ((request: AuthRequest) => void) | null = null;
 
+  // Callback when the working directory should be changed
+  public onWorkingDirectoryChange: ((path: string) => void) | null = null;
+
   // Callback when a source config changes (hot-reload from file watcher)
   public onSourceChange: ((slug: string, source: LoadedSource | null) => void) | null = null;
 
@@ -497,6 +500,10 @@ export class CraftAgent {
       onAuthRequest: (request) => {
         this.onDebug?.(`[CraftAgent] onAuthRequest received: ${request.sourceSlug} (type: ${request.type})`);
         this.onAuthRequest?.(request);
+      },
+      onWorkingDirectoryChange: (path) => {
+        this.onDebug?.(`[CraftAgent] onWorkingDirectoryChange received: ${path}`);
+        this.onWorkingDirectoryChange?.(path);
       },
     });
 
@@ -3032,6 +3039,7 @@ Please continue the conversation naturally from where we left off.
     this.onDebug = null;
     this.onPlanSubmitted = null;
     this.onAuthRequest = null;
+    this.onWorkingDirectoryChange = null;
     this.onSourceChange = null;
     this.onSourcesListChange = null;
     this.onConfigValidationError = null;
