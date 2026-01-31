@@ -1402,11 +1402,26 @@ export class SessionManager {
       resolvedWorkingDir = options.workingDirectory
     }
 
+    // If a project is specified, look up its label to auto-assign
+    let initialLabels: string[] | undefined
+    if (options?.projectId) {
+      try {
+        const { getProjectById } = await import('@craft-agent/shared/projects')
+        const project = getProjectById(workspaceRootPath, options.projectId)
+        if (project?.config.labelId) {
+          initialLabels = [project.config.labelId]
+        }
+      } catch {
+        // Ignore errors - session will be created without the project label
+      }
+    }
+
     // Use storage layer to create and persist the session
     const storedSession = await createStoredSession(workspaceRootPath, {
       permissionMode: defaultPermissionMode,
       workingDirectory: resolvedWorkingDir,
       projectId: options?.projectId,
+      labels: initialLabels,
     })
 
     const managed: ManagedSession = {
@@ -1590,6 +1605,12 @@ export class SessionManager {
         } catch (error) {
           sessionLog.error(`Failed to read plan file:`, error)
         }
+      }
+
+      // Wire up onWorkingDirectoryChange to update session working directory
+      managed.agent.onWorkingDirectoryChange = (path) => {
+        sessionLog.info(`Working directory change for session ${managed.id}:`, path)
+        this.updateWorkingDirectory(managed.id, path)
       }
 
       // Wire up onAuthRequest to add auth message to conversation and pause execution

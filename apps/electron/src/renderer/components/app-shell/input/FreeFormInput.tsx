@@ -10,6 +10,7 @@ import {
   DatabaseZap,
   ChevronDown,
   Loader2,
+  GitBranch,
 } from 'lucide-react'
 import { Icon_Home, Icon_Folder } from '@craft-agent/ui'
 
@@ -1407,6 +1408,39 @@ export function FreeFormInput({
               disabled={isWorkingDirectoryLocked}
             />
           )}
+
+          {/* 4. Worktree Quick Action - Cmd+Shift+W */}
+          {workingDirectory && (() => {
+            const isInWorktree = workingDirectory.includes('-worktrees/')
+            return (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {/* Wrap in span to receive hover events even when button is disabled */}
+                  <span className="inline-flex shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => !isInWorktree && onSubmit('/worktree')}
+                      disabled={isInWorktree}
+                      className={cn(
+                        "inline-flex items-center justify-center h-7 w-7 rounded-[6px]",
+                        "transition-colors select-none",
+                        isInWorktree
+                          ? "text-muted-foreground/50"
+                          : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
+                      )}
+                    >
+                      <GitBranch className="h-4 w-4" />
+                    </button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">
+                  {isInWorktree
+                    ? "Already in a worktree - switch to main repo"
+                    : "Create worktree (⌘⇧W)"}
+                </TooltipContent>
+              </Tooltip>
+            )
+          })()}
           </div>
 
           {/* Spacer */}

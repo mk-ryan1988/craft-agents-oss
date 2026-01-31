@@ -1022,6 +1022,12 @@ function AppShellContent({
       { key: 'n', cmd: true, shift: true, action: () => handleNewChat(true) },
       // Settings
       { key: ',', cmd: true, action: onOpenSettings },
+      // Worktree - invoke /worktree skill
+      { key: 'w', cmd: true, shift: true, action: () => {
+        if (session.selected) {
+          window.electronAPI.sendMessage(session.selected, '/worktree')
+        }
+      }},
       // History navigation
       { key: '[', cmd: true, action: goBack },
       { key: ']', cmd: true, action: goForward },

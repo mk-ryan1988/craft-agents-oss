@@ -118,7 +118,10 @@ export const FreeFormInputContextBadge = React.forwardRef<HTMLButtonElement, Fre
       return (
         <Tooltip open={isOpen ? false : undefined}>
           <TooltipTrigger asChild>
-            {button}
+            {/* Wrap in span to receive hover events even when button is disabled */}
+            <span className="inline-flex">
+              {button}
+            </span>
           </TooltipTrigger>
           <TooltipContent side="top">
             {tooltip}
