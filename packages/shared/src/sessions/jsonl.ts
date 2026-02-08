@@ -10,6 +10,8 @@ import { open, readFile } from 'fs/promises';
 import type { SessionHeader, StoredSession, StoredMessage, SessionTokenUsage } from './types.ts';
 import { toPortablePath, expandPath } from '../utils/paths.ts';
 import { debug } from '../utils/debug.ts';
+import { safeJsonParse } from '../utils/files.ts';
+import { pickSessionFields } from './utils.ts';
 
 /**
  * Read only the header (first line) from a session.jsonl file.
@@ -26,7 +28,7 @@ export function readSessionHeader(sessionFile: string): SessionHeader | null {
     const firstNewline = content.indexOf('\n');
     const firstLine = firstNewline > 0 ? content.slice(0, firstNewline) : content;
 
-    return JSON.parse(firstLine) as SessionHeader;
+    return safeJsonParse(firstLine) as SessionHeader;
   } catch (error) {
     debug('[jsonl] Failed to read session header:', sessionFile, error);
     return null;
@@ -45,7 +47,7 @@ export function readSessionJsonl(sessionFile: string): StoredSession | null {
     const firstLine = lines[0];
     if (!firstLine) return null;
 
-    const header = JSON.parse(firstLine) as SessionHeader;
+    const header = safeJsonParse(firstLine) as SessionHeader;
     // Parse messages resiliently: skip lines that fail to parse (e.g. truncated by crash)
     // rather than losing the entire session's messages
     const messages = parseMessagesResilient(lines.slice(1));
@@ -56,28 +58,19 @@ export function readSessionJsonl(sessionFile: string): StoredSession | null {
     const sdkCwd = header.sdkCwd ? expandPath(header.sdkCwd) : workingDir;
 
     return {
-      id: header.id,
+      ...pickSessionFields(header),
+      // Path expansion for portable paths
       workspaceRootPath: expandPath(header.workspaceRootPath),
-      createdAt: header.createdAt,
-      lastUsedAt: header.lastUsedAt,
-      name: header.name,
-      sdkSessionId: header.sdkSessionId,
-      isFlagged: header.isFlagged,
-      todoState: header.todoState,
-      labels: header.labels,
-      permissionMode: header.permissionMode,
-      lastReadMessageId: header.lastReadMessageId,
-      hasUnread: header.hasUnread,  // Explicit unread flag for NEW badge state machine
-      enabledSourceSlugs: header.enabledSourceSlugs,
       workingDirectory: workingDir,
       sdkCwd,
       projectId: header.projectId,
       sharedUrl: header.sharedUrl,
       sharedId: header.sharedId,
       model: header.model,
+      // Runtime fields
       messages,
       tokenUsage: header.tokenUsage,
-    };
+    } as StoredSession;
   } catch (error) {
     debug('[jsonl] Failed to read session:', sessionFile, error);
     return null;
@@ -110,12 +103,14 @@ export function writeSessionJsonl(sessionFile: string, session: StoredSession): 
 /**
  * Create a SessionHeader from a StoredSession.
  * Pre-computes messageCount, preview, and lastMessageRole for fast list loading.
+ * Uses pickSessionFields() to ensure all persistent fields are included.
  */
 export function createSessionHeader(session: StoredSession): SessionHeader {
   return {
-    id: session.id,
+    ...pickSessionFields(session),
+    // Path conversion for portability
     workspaceRootPath: toPortablePath(session.workspaceRootPath),
-    createdAt: session.createdAt,
+    // Override lastUsedAt with current timestamp (save time, not original)
     lastUsedAt: Date.now(),
     lastMessageAt: session.lastMessageAt,  // Actual message time, distinct from lastUsedAt (persist time)
     name: session.name,
@@ -139,7 +134,7 @@ export function createSessionHeader(session: StoredSession): SessionHeader {
     preview: extractPreview(session.messages),
     tokenUsage: session.tokenUsage,
     lastFinalMessageId: extractLastFinalMessageId(session.messages),
-  };
+  } as SessionHeader;
 }
 
 /**
@@ -181,10 +176,14 @@ function extractPreview(messages: StoredMessage[]): string | undefined {
   const firstUserMessage = messages.find(m => m.type === 'user');
   if (!firstUserMessage?.content) return undefined;
 
-  // Sanitize: strip special blocks and tags, normalize whitespace
+  // Sanitize: strip special blocks, tags, and bracket mentions, normalize whitespace
   const sanitized = firstUserMessage.content
     .replace(/<edit_request>[\s\S]*?<\/edit_request>/g, '') // Strip entire edit_request blocks
     .replace(/<[^>]+>/g, '')     // Strip remaining XML/HTML tags
+    .replace(/\[skill:(?:[\w-]+:)?[\w-]+\]/g, '')   // Strip [skill:...] mentions
+    .replace(/\[source:[\w-]+\]/g, '')              // Strip [source:...] mentions
+    .replace(/\[file:[^\]]+\]/g, '')                // Strip [file:...] mentions
+    .replace(/\[folder:[^\]]+\]/g, '')              // Strip [folder:...] mentions
     .replace(/\s+/g, ' ')        // Collapse whitespace (including newlines)
     .trim();
 
@@ -204,7 +203,7 @@ export async function readSessionHeaderAsync(sessionFile: string): Promise<Sessi
       const content = buffer.toString('utf-8', 0, bytesRead);
       const firstNewline = content.indexOf('\n');
       const firstLine = firstNewline > 0 ? content.slice(0, firstNewline) : content;
-      return JSON.parse(firstLine) as SessionHeader;
+      return safeJsonParse(firstLine) as SessionHeader;
     } finally {
       await handle.close();
     }

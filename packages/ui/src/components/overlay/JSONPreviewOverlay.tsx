@@ -118,7 +118,7 @@ export function JSONPreviewOverlay({
     <PreviewOverlay
       isOpen={isOpen}
       onClose={onClose}
-      typeBadge={{
+      badge={{
         icon: Braces,
         label: 'JSON',
         variant: 'blue',

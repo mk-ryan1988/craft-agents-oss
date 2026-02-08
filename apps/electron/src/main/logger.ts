@@ -5,8 +5,11 @@ import { app } from 'electron'
  * Debug mode is enabled when running from source (not packaged) or with --debug flag.
  * - true: `bun run electron:start` or `electron .` or packaged app with `--debug`
  * - false: bundled .app/.exe release without --debug flag
+ *
+ * Note: We guard against app being undefined for build verification (node --check)
+ * which runs outside of Electron context.
  */
-export const isDebugMode = !app.isPackaged || process.argv.includes('--debug')
+export const isDebugMode = !app?.isPackaged || process.argv.includes('--debug')
 
 // Configure transports based on debug mode
 if (isDebugMode) {
@@ -46,6 +49,7 @@ export const sessionLog = log.scope('session')
 export const ipcLog = log.scope('ipc')
 export const windowLog = log.scope('window')
 export const agentLog = log.scope('agent')
+export const searchLog = log.scope('search')
 
 /**
  * Get the path to the current log file.

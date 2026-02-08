@@ -69,7 +69,7 @@ export function ImagePreviewOverlay({
       isOpen={isOpen}
       onClose={onClose}
       theme={theme}
-      typeBadge={{
+      badge={{
         icon: Image,
         label: 'Image',
         variant: 'purple',

@@ -3,9 +3,18 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
+## How it Works (Video)
+To understand what Craft Agents does and how it works watch this video.
+
+[![Demo Video](https://img.youtube.com/vi/xQouiAIilvU/hqdefault.jpg)](https://www.youtube.com/watch?v=xQouiAIilvU)
+
+[Click Here (or on the image above) to watch the video on YouTube →](https://www.youtube.com/watch?v=xQouiAIilvU)
+
+
+## Why Craft Agents was built
 Craft Agents is a tool we built so that we (at craft.do) can work effectively with agents. It enables intuitive multitasking, no-fluff connection to any API or Service, sharing sessions, and a more document (vs code) centric workflow - in a beautiful and fluid UI.
 
-It leans on Claude Code through the Claude Agent SDK - follows what we found great, and improves areas where we've desired improvements.
+It uses the Claude Agent SDK and the Codex app-server side by side—building on what we found great and improving areas where we’ve desired improvements.
 
 It's built with Agent Native software principles in mind, and is highly customisable out of the box. One of the first of its kind.
 
@@ -76,6 +85,8 @@ bun run electron:start
 
 - **Multi-Session Inbox**: Desktop app with session management, status workflow, and flagging
 - **Claude Code Experience**: Streaming responses, tool visualization, real-time updates
+- **Multiple LLM Connections**: Add multiple AI providers and set per-workspace defaults
+- **Codex / OpenAI Support**: Run Codex-backed sessions alongside Anthropic
 - **Craft MCP Integration**: Access to 32+ Craft document tools (blocks, collections, search, tasks)
 - **Sources**: Connect to MCP servers, REST APIs (Google, Slack, Microsoft), and local filesystems
 - **Permission Modes**: Three-level system (Explore, Ask to Edit, Auto) with customizable rules
@@ -89,7 +100,7 @@ bun run electron:start
 ## Quick Start
 
 1. **Launch the app** after installation
-2. **Choose API Connection**: Use your own Anthropic API key or Claude Max subscription
+2. **Choose API Connection**: Use Anthropic (API key or Claude Max) or Codex (OpenAI OAuth)
 3. **Create a workspace**: Set up a workspace to organize your sessions
 4. **Connect sources** (optional): Add MCP servers, REST APIs, or local filesystems
 5. **Start chatting**: Create sessions and interact with Claude
@@ -176,17 +187,75 @@ bun run typecheck:all
 
 ### Environment Variables
 
-OAuth integrations (Google, Slack, Microsoft) require credentials. Create a `.env` file:
+OAuth integrations (Slack, Microsoft) require credentials baked into the build. Create a `.env` file:
 
 ```bash
 MICROSOFT_OAUTH_CLIENT_ID=your-client-id
-GOOGLE_OAUTH_CLIENT_SECRET=your-google-client-secret
-GOOGLE_OAUTH_CLIENT_ID=your-client-id.apps.googleusercontent.com
 SLACK_OAUTH_CLIENT_ID=your-slack-client-id
 SLACK_OAUTH_CLIENT_SECRET=your-slack-client-secret
 ```
 
-See [Google Cloud Console](https://console.cloud.google.com/apis/credentials) to create OAuth credentials.
+**Note:** Google OAuth credentials are NOT baked into the build. Users provide their own credentials via source configuration. See the [Google OAuth Setup](#google-oauth-setup-gmail-calendar-drive) section below.
+
+### Google OAuth Setup (Gmail, Calendar, Drive)
+
+Google integrations require you to create your own OAuth credentials. This is a one-time setup.
+
+#### 1. Create a Google Cloud Project
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com)
+2. Create a new project (or select an existing one)
+3. Note your Project ID
+
+#### 2. Enable Required APIs
+
+Go to **APIs & Services → Library** and enable the APIs you need:
+- **Gmail API** - for email integration
+- **Google Calendar API** - for calendar integration
+- **Google Drive API** - for file storage integration
+
+#### 3. Configure OAuth Consent Screen
+
+1. Go to **APIs & Services → OAuth consent screen**
+2. Select **External** user type (unless you have Google Workspace)
+3. Fill in required fields:
+   - App name: e.g., "My Craft Agent"
+   - User support email: your email
+   - Developer contact: your email
+4. Add scopes (optional - can leave default)
+5. Add yourself as a test user (required for External apps in testing mode)
+6. Complete the wizard
+
+#### 4. Create OAuth Credentials
+
+1. Go to **APIs & Services → Credentials**
+2. Click **Create Credentials → OAuth Client ID**
+3. Application type: **Desktop app**
+4. Name: e.g., "Craft Agent Desktop"
+5. Click **Create**
+6. Note the **Client ID** and **Client Secret**
+
+#### 5. Configure in Craft Agent
+
+When setting up a Google source (Gmail, Calendar, Drive), add these fields to your source's `config.json`:
+
+```json
+{
+  "api": {
+    "googleService": "gmail",
+    "googleOAuthClientId": "your-client-id.apps.googleusercontent.com",
+    "googleOAuthClientSecret": "your-client-secret"
+  }
+}
+```
+
+Or simply tell the agent you want to connect Gmail/Calendar/Drive - it will guide you through entering your credentials.
+
+#### Security Notes
+
+- Your OAuth credentials are stored encrypted alongside other source credentials
+- Never commit credentials to version control
+- For production use, consider getting your OAuth consent screen verified by Google
 
 ## Configuration
 
@@ -194,7 +263,7 @@ Configuration is stored at `~/.craft-agent/`:
 
 ```
 ~/.craft-agent/
-├── config.json              # Main config (workspaces, auth type)
+├── config.json              # Main config (workspaces, LLM connections)
 ├── credentials.enc          # Encrypted credentials (AES-256-GCM)
 ├── preferences.json         # User preferences
 ├── theme.json               # App-level theme
@@ -219,11 +288,11 @@ Tool responses exceeding ~60KB are automatically summarized using Claude Haiku w
 External apps can navigate using `craftagents://` URLs:
 
 ```
-craftagents://allChats                    # All chats view
-craftagents://allChats/chat/session123    # Specific chat
-craftagents://settings                    # Settings
-craftagents://sources/source/github       # Source info
-craftagents://action/new-chat             # Create new chat
+craftagents://allSessions                      # All sessions view
+craftagents://allSessions/session/session123   # Specific session
+craftagents://settings                         # Settings
+craftagents://sources/source/github            # Source info
+craftagents://action/new-chat                  # Create new session
 ```
 
 ## Tech Stack
@@ -232,6 +301,7 @@ craftagents://action/new-chat             # Create new chat
 |-------|------------|
 | Runtime | [Bun](https://bun.sh/) |
 | AI | [@anthropic-ai/claude-agent-sdk](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) |
+| AI (OpenAI) | Craft Agents Codex fork (app-server) |
 | Desktop | [Electron](https://www.electronjs.org/) + React |
 | UI | [shadcn/ui](https://ui.shadcn.com/) + Tailwind CSS v4 |
 | Build | esbuild (main) + Vite (renderer) |
@@ -244,6 +314,10 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 ### Third-Party Licenses
 
 This project uses the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), which is subject to [Anthropic's Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms).
+
+Craft Agents also bundles a custom Codex app-server fork to support OpenAI/Codex connections:
+
+- https://github.com/lukilabs/craft-agents-codex
 
 ### Trademark
 

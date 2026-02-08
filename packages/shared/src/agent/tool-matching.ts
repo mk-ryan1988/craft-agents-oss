@@ -15,6 +15,10 @@
  */
 
 import type { AgentEvent } from '@craft-agent/core/types';
+import { toolMetadataStore } from '../network-interceptor.ts';
+import { createLogger } from '../utils/debug.ts';
+
+const log = createLogger('tool-matching');
 
 // ============================================================================
 // Tool Index — append-only, order-independent lookup
@@ -106,11 +110,16 @@ export type ContentBlock = ToolUseBlock | ToolResultBlock | TextBlock | { type: 
  * Parent assignment comes directly from the SDK's parent_tool_use_id field
  * on the message — no stacks or FIFO needed.
  *
+ * Fallback: When SDK's parent_tool_use_id is null AND exactly one Task is active,
+ * we assign that Task as the parent. This handles cases where the SDK doesn't
+ * provide parent info for subagent child tools.
+ *
  * @param contentBlocks - Content blocks from SDKAssistantMessage.message.content
  * @param sdkParentToolUseId - parent_tool_use_id from the SDK message (null = top-level)
  * @param toolIndex - Append-only index to register new tools in
  * @param emittedToolStartIds - Set of tool IDs already emitted (for stream/assistant dedup)
  * @param turnId - Current turn correlation ID
+ * @param activeParentTools - Set of currently active Task tool IDs (for fallback parent assignment)
  * @returns Array of tool_start AgentEvents
  */
 export function extractToolStarts(
@@ -119,6 +128,7 @@ export function extractToolStarts(
   toolIndex: ToolIndex,
   emittedToolStartIds: Set<string>,
   turnId?: string,
+  activeParentTools?: Set<string>,
 ): AgentEvent[] {
   const events: AgentEvent[] = [];
 
@@ -129,6 +139,23 @@ export function extractToolStarts(
     // Register in index (idempotent — handles both stream and assistant events)
     toolIndex.register(toolBlock.id, toolBlock.name, toolBlock.input);
 
+    // Determine parent: SDK's parent_tool_use_id is authoritative when present.
+    // Fallback: if SDK provides null AND exactly one Task is active, use that Task.
+    // This handles subagent child tools when SDK doesn't provide parent info.
+    let parentToolUseId: string | undefined;
+    if (sdkParentToolUseId) {
+      // SDK provided explicit parent — use it
+      parentToolUseId = sdkParentToolUseId;
+    } else if (activeParentTools && activeParentTools.size === 1) {
+      // Fallback: exactly one active Task, assign it as parent for child tools.
+      // We can't safely assign when multiple Tasks are active (ambiguous).
+      // Don't assign if this tool IS the Task (would create self-reference).
+      const [singleActiveParent] = activeParentTools;
+      if (toolBlock.id !== singleActiveParent) {
+        parentToolUseId = singleActiveParent;
+      }
+    }
+
     // Dedup: stream_event arrives before assistant message, both have the same tool_use block.
     // The Set is append-only and order-independent (same ID always deduplicates the same way).
     if (emittedToolStartIds.has(toolBlock.id)) {
@@ -136,8 +163,7 @@ export function extractToolStarts(
       const hasNewInput = Object.keys(toolBlock.input).length > 0;
       if (hasNewInput) {
         // Re-emit with complete input (assistant message has full input, stream has {})
-        const intent = extractIntent(toolBlock);
-        const displayName = toolBlock.input._displayName as string | undefined;
+        const { intent, displayName } = extractToolMetadata(toolBlock);
         events.push({
           type: 'tool_start',
           toolName: toolBlock.name,
@@ -146,7 +172,7 @@ export function extractToolStarts(
           intent,
           displayName,
           turnId,
-          parentToolUseId: sdkParentToolUseId ?? undefined,
+          parentToolUseId,
         });
       }
       continue;
@@ -154,12 +180,7 @@ export function extractToolStarts(
 
     emittedToolStartIds.add(toolBlock.id);
 
-    // Parent assignment: SDK's parent_tool_use_id is authoritative.
-    // null → top-level tool, string → tool runs inside that Task subagent.
-    const parentToolUseId = sdkParentToolUseId ?? undefined;
-
-    const intent = extractIntent(toolBlock);
-    const displayName = toolBlock.input._displayName as string | undefined;
+    const { intent, displayName } = extractToolMetadata(toolBlock);
 
     events.push({
       type: 'tool_start',
@@ -276,15 +297,42 @@ export function extractToolResults(
 // Helpers (pure)
 // ============================================================================
 
-/** Extract intent from a tool_use block's input */
-function extractIntent(toolBlock: ToolUseBlock): string | undefined {
-  const input = toolBlock.input;
-  let intent = input._intent as string | undefined;
-  // For Bash tools, use description field as intent
-  if (!intent && toolBlock.name === 'Bash') {
-    intent = (input as { description?: string }).description;
+/**
+ * Extract intent and displayName metadata for a tool call.
+ *
+ * Sources (checked in priority order):
+ * 1. toolMetadataStore — populated by the SSE stripping stream in network-interceptor.ts
+ * 2. toolBlock.input._intent / _displayName — fallback for Codex backend or if SSE interception didn't run
+ * 3. Bash description field — fallback for intent on Bash tools
+ */
+function extractToolMetadata(toolBlock: ToolUseBlock): { intent?: string; displayName?: string } {
+  // 1. Check the metadata store first (populated by SSE interceptor)
+  const stored = toolMetadataStore.get(toolBlock.id);
+  if (stored) {
+    let intent = stored.intent;
+    const displayName = stored.displayName;
+
+    // Bash description fallback for intent
+    if (!intent && toolBlock.name === 'Bash') {
+      intent = (toolBlock.input as { description?: string }).description;
+    }
+
+    return { intent, displayName };
   }
-  return intent;
+
+  // Log when metadata store misses — helps diagnose cross-process sync issues
+  log.debug(`extractToolMetadata: store miss for ${toolBlock.name} (${toolBlock.id})`);
+
+  // 2. Fallback: read directly from tool input (Codex backend, non-streaming, etc.)
+  let intent = toolBlock.input._intent as string | undefined;
+  const displayName = toolBlock.input._displayName as string | undefined;
+
+  // 3. Bash description fallback for intent
+  if (!intent && toolBlock.name === 'Bash') {
+    intent = (toolBlock.input as { description?: string }).description;
+  }
+
+  return { intent, displayName };
 }
 
 /** Serialize a tool result value to string, handling circular references */

@@ -18,6 +18,7 @@ import { X, type LucideIcon } from 'lucide-react'
 import { useOverlayMode, OVERLAY_LAYOUT } from '../../lib/layout'
 import { PreviewHeader, PreviewHeaderBadge, type PreviewBadgeVariant } from '../ui/PreviewHeader'
 import { FullscreenOverlayBase } from './FullscreenOverlayBase'
+import { OverlayErrorBanner } from './OverlayErrorBanner'
 
 /** Badge color variants - re-export for backwards compatibility */
 export type BadgeVariant = PreviewBadgeVariant
@@ -38,7 +39,9 @@ export interface PreviewOverlayProps {
   }
 
   /** Main title (e.g., file path) */
-  title: string
+  title?: string
+  /** File path (alias for title, used by file-based overlays) */
+  filePath?: string
   /** Callback when title is clicked (e.g., to open file) */
   onTitleClick?: () => void
   /** Optional subtitle (e.g., line range info) */
@@ -60,6 +63,10 @@ export interface PreviewOverlayProps {
   backgroundColor?: string
   /** Text color override (default: theme-based) */
   textColor?: string
+  /** Render inline without dialog (for playground) */
+  embedded?: boolean
+  /** Additional CSS class name */
+  className?: string
 }
 
 export function PreviewOverlay({
@@ -68,6 +75,7 @@ export function PreviewOverlay({
   theme: _theme, // Deprecated: theme is now auto-inherited from CSS variables
   badge,
   title,
+  filePath,
   onTitleClick,
   subtitle,
   error,
@@ -75,6 +83,8 @@ export function PreviewOverlay({
   children,
   backgroundColor: _backgroundColor, // Deprecated: use CSS variables
   textColor: _textColor, // Deprecated: use CSS variables
+  embedded,
+  className: _className,
 }: PreviewOverlayProps) {
   const responsiveMode = useOverlayMode()
   const isModal = responsiveMode === 'modal'
@@ -102,23 +112,53 @@ export function PreviewOverlay({
         label={badge.label}
         variant={badge.variant}
       />
-      <PreviewHeaderBadge label={title} onClick={onTitleClick} shrinkable />
+      <PreviewHeaderBadge label={title || filePath || ''} onClick={onTitleClick} shrinkable />
       {subtitle && <PreviewHeaderBadge label={String(subtitle)} />}
       {headerActions}
     </PreviewHeader>
   )
 
+  // Error banner — uses shared OverlayErrorBanner with tinted-shadow styling.
+  // Rendered inside the centering wrapper so error + content are centered together.
   const errorBanner = error && (
-    <div className="px-4 py-3 bg-destructive/10 border-b border-destructive/20 flex items-start gap-3">
-      <X className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
-      <div className="flex-1 min-w-0">
-        <div className="text-xs font-semibold text-destructive/70 mb-0.5">{error.label}</div>
-        <p className="text-sm text-destructive whitespace-pre-wrap break-words">{error.message}</p>
+    <div className="px-6 pb-4">
+      <OverlayErrorBanner label={error.label} message={error.message} />
+    </div>
+  )
+
+  // Gradient fade mask for modal/embedded modes — mirrors FullscreenOverlayBase's
+  // scroll container structure so children (ContentFrame, etc.) work identically
+  // in all modes using flow-based layout inside a scrollable, masked viewport.
+  const FADE_SIZE = 24
+  const FADE_MASK = `linear-gradient(to bottom, transparent 0%, black ${FADE_SIZE}px, black calc(100% - ${FADE_SIZE}px), transparent 100%)`
+
+  const contentArea = (
+    <div
+      className="flex-1 min-h-0 relative"
+      style={{ maskImage: FADE_MASK, WebkitMaskImage: FADE_MASK }}
+    >
+      <div
+        className="absolute inset-0 overflow-y-auto"
+        style={{ paddingTop: FADE_SIZE, paddingBottom: FADE_SIZE, scrollPaddingTop: FADE_SIZE }}
+      >
+        {/* Centering wrapper — error + content are vertically centered together when small */}
+        <div className="min-h-full flex flex-col justify-center">
+          {errorBanner}
+          {children}
+        </div>
       </div>
     </div>
   )
 
-  const contentArea = <div className="flex-1 min-h-0 relative">{children}</div>
+  // Embedded mode — renders inline without dialog/portal, for design system playground
+  if (embedded) {
+    return (
+      <div className="flex flex-col bg-background h-full w-full overflow-hidden rounded-lg border border-foreground/5">
+        {header}
+        {contentArea}
+      </div>
+    )
+  }
 
   // Fullscreen mode - uses FullscreenOverlayBase for portal, traffic lights, and ESC handling
   if (!isModal) {
@@ -155,7 +195,6 @@ export function PreviewOverlay({
         }}
       >
         {header}
-        {errorBanner}
         {contentArea}
       </div>
     </div>,

@@ -24,7 +24,7 @@ export type SourceMcpAuthType = 'oauth' | 'bearer' | 'none';
 /**
  * API authentication types
  */
-export type ApiAuthType = 'bearer' | 'header' | 'query' | 'basic' | 'none';
+export type ApiAuthType = 'bearer' | 'header' | 'query' | 'basic' | 'oauth' | 'none';
 
 /**
  * Google service types for OAuth scope selection
@@ -105,7 +105,7 @@ export function inferSlackServiceFromUrl(baseUrl: string | undefined): SlackServ
 /**
  * Infer Microsoft service from API baseUrl.
  * Microsoft Graph API uses graph.microsoft.com for all services.
- * Returns 'outlook' by default if URL matches Microsoft Graph pattern.
+ * Returns undefined if service cannot be determined from URL path.
  */
 export function inferMicrosoftServiceFromUrl(baseUrl: string | undefined): MicrosoftService | undefined {
   if (!baseUrl) return undefined;
@@ -138,8 +138,8 @@ export function inferMicrosoftServiceFromUrl(baseUrl: string | undefined): Micro
     if (pathname.includes('/sites')) {
       return 'sharepoint';
     }
-    // Default to outlook for general Graph API access
-    return 'outlook';
+    // Cannot determine service from generic Graph URL - require explicit microsoftService config
+    return undefined;
   }
 
   // Match Outlook-specific API (legacy, but still used)
@@ -247,6 +247,7 @@ export interface ApiSourceConfig {
   baseUrl: string;
   authType: ApiAuthType;
   headerName?: string; // For 'header' auth (e.g., "X-API-Key")
+  headerNames?: string[]; // For multi-header auth (e.g., ["DD-API-KEY", "DD-APPLICATION-KEY"])
   queryParam?: string; // For 'query' auth (e.g., "api_key")
   authScheme?: string; // For 'bearer' auth (default: "Bearer", could be "Token")
   defaultHeaders?: Record<string, string>; // Headers to include with every request
@@ -255,6 +256,9 @@ export interface ApiSourceConfig {
   // Google OAuth fields (used when provider is 'google')
   googleService?: GoogleService; // Predefined service for scope selection
   googleScopes?: string[]; // Custom scopes (overrides googleService)
+  // User-provided OAuth credentials (for OSS users who create their own Google Cloud project)
+  googleOAuthClientId?: string; // User's Google OAuth Client ID
+  googleOAuthClientSecret?: string; // User's Google OAuth Client Secret
 
   // Slack OAuth fields (used when provider is 'slack')
   // Uses user_scope for user authentication (posts as the user, not a bot)
@@ -304,9 +308,9 @@ export interface FolderSourceConfig {
   api?: ApiSourceConfig;
   local?: LocalSourceConfig;
 
-  // Icon: emoji or URL (auto-downloaded to icon.* file)
-  // Local icon files (icon.svg, icon.png) are auto-discovered
-  // Priority: local file > URL (downloaded) > emoji
+  // Icon: emoji or URL
+  // Config is the source of truth. Local icon files are auto-discovered only when icon is undefined.
+  // Priority: emoji > URL > local file (auto-discovered)
   icon?: string;
 
   // Short description for agent context (e.g., "Issue tracking, bugs, tasks, sprints")
@@ -397,6 +401,7 @@ export interface ApiConfig {
   auth?: {
     type: 'none' | 'header' | 'bearer' | 'query' | 'basic';
     headerName?: string;
+    headerNames?: string[]; // For multi-header auth (e.g., ["DD-API-KEY", "DD-APPLICATION-KEY"])
     queryParam?: string;
     authScheme?: string;
     credentialLabel?: string;

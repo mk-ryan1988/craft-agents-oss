@@ -15,6 +15,7 @@ import { parseDiffFromFile, DIFFS_TAG_NAME, type FileContents } from '@pierre/di
 import { cn } from '../../lib/utils'
 import { LANGUAGE_MAP } from './language-map'
 import { useShikiTheme } from '../../context/ShikiThemeContext'
+import { registerCraftShikiThemes } from './registerShikiThemes'
 
 // Register the diffs-container custom element if not already registered
 // This is necessary because the React component renders a custom element
@@ -29,6 +30,10 @@ if (typeof HTMLElement !== 'undefined' && !customElements.get(DIFFS_TAG_NAME)) {
   customElements.define(DIFFS_TAG_NAME, FileDiffContainer)
 }
 
+// Register custom themes once per runtime.
+registerCraftShikiThemes()
+
+
 export interface ShikiDiffViewerProps {
   /** Original (before) content */
   original: string
@@ -42,6 +47,14 @@ export interface ShikiDiffViewerProps {
   diffStyle?: 'unified' | 'split'
   /** Theme mode */
   theme?: 'light' | 'dark'
+  /** Shiki theme name override */
+  shikiTheme?: string
+  /** Disable background styling */
+  disableBackground?: boolean
+  /** Disable file header display */
+  disableFileHeader?: boolean
+  /** Callback when file header is clicked */
+  onFileHeaderClick?: (path: string) => void
   /** Callback when ready */
   onReady?: () => void
   /** Additional class names */

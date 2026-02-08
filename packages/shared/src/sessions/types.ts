@@ -14,6 +14,41 @@ import type { ThinkingLevel } from '../agent/thinking-levels.ts';
 import type { StoredAttachment, MessageRole, ToolStatus, AuthRequestType, AuthStatus, CredentialInputMode, StoredMessage } from '@craft-agent/core/types';
 
 /**
+ * Session fields that persist to disk.
+ * Add new fields here - they automatically propagate to JSONL read/write
+ * via pickSessionFields() utility.
+ *
+ * IMPORTANT: When adding a new field:
+ * 1. Add it to this array
+ * 2. Add it to SessionConfig interface below
+ * 3. Done - serialization is automatic
+ */
+export const SESSION_PERSISTENT_FIELDS = [
+  // Identity
+  'id', 'workspaceRootPath', 'sdkSessionId', 'sdkCwd',
+  // Timestamps
+  'createdAt', 'lastUsedAt', 'lastMessageAt',
+  // Display
+  'name', 'isFlagged', 'todoState', 'labels', 'hidden',
+  // Read tracking
+  'lastReadMessageId', 'hasUnread',
+  // Config
+  'enabledSourceSlugs', 'permissionMode', 'workingDirectory',
+  // Model/Connection
+  'model', 'llmConnection', 'connectionLocked', 'thinkingLevel',
+  // Sharing
+  'sharedUrl', 'sharedId',
+  // Plan execution
+  'pendingPlanExecution',
+  // Archive
+  'isArchived', 'archivedAt',
+  // Hierarchy
+  'parentSessionId', 'siblingOrder', 'projectId',
+] as const;
+
+export type SessionPersistentField = typeof SESSION_PERSISTENT_FIELDS[number];
+
+/**
  * Todo state for sessions (user-controlled, never automatic)
  *
  * Dynamic status ID referencing workspace status config.
@@ -95,6 +130,10 @@ export interface SessionConfig {
   sharedId?: string;
   /** Model to use for this session (overrides global config if set) */
   model?: string;
+  /** LLM connection slug for this session (locked after first message) */
+  llmConnection?: string;
+  /** Whether the connection is locked (cannot be changed after first agent creation) */
+  connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
   /**
@@ -108,6 +147,17 @@ export interface SessionConfig {
     /** Whether we're still waiting for compaction to complete */
     awaitingCompaction: boolean;
   };
+  /** When true, session is hidden from session list (e.g., mini edit sessions) */
+  hidden?: boolean;
+  /** Whether this session is archived */
+  isArchived?: boolean;
+  /** Timestamp when session was archived (for retention policy) */
+  archivedAt?: number;
+  // Sub-session hierarchy (1 level max)
+  /** Parent session ID (if this is a sub-session). Null/undefined = root session. */
+  parentSessionId?: string;
+  /** Explicit sibling order (lazy - only populated when user reorders). */
+  siblingOrder?: number;
 }
 
 /**
@@ -166,6 +216,10 @@ export interface SessionHeader {
   sharedId?: string;
   /** Model to use for this session (overrides global config if set) */
   model?: string;
+  /** LLM connection slug for this session (locked after first message) */
+  llmConnection?: string;
+  /** Whether the connection is locked (cannot be changed after first agent creation) */
+  connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
   /**
@@ -179,6 +233,17 @@ export interface SessionHeader {
     /** Whether we're still waiting for compaction to complete */
     awaitingCompaction: boolean;
   };
+  /** When true, session is hidden from session list (e.g., mini edit sessions) */
+  hidden?: boolean;
+  /** Whether this session is archived */
+  isArchived?: boolean;
+  /** Timestamp when session was archived (for retention policy) */
+  archivedAt?: number;
+  // Sub-session hierarchy (1 level max)
+  /** Parent session ID (if this is a sub-session). Null/undefined = root session. */
+  parentSessionId?: string;
+  /** Explicit sibling order (lazy - only populated when user reorders). */
+  siblingOrder?: number;
   // Pre-computed fields for fast list loading
   /** Number of messages in session */
   messageCount: number;
@@ -231,6 +296,10 @@ export interface SessionMetadata {
   lastMessageRole?: 'user' | 'assistant' | 'plan' | 'tool' | 'error';
   /** Model to use for this session (overrides global config if set) */
   model?: string;
+  /** LLM connection slug for this session (locked after first message) */
+  llmConnection?: string;
+  /** Whether the connection is locked (cannot be changed after first agent creation) */
+  connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
   /** ID of last message user has read - for unread detection */
@@ -245,4 +314,15 @@ export interface SessionMetadata {
   hasUnread?: boolean;
   /** Token usage statistics (from JSONL header, available without loading messages) */
   tokenUsage?: SessionTokenUsage;
+  /** When true, session is hidden from session list (e.g., mini edit sessions) */
+  hidden?: boolean;
+  /** Whether this session is archived */
+  isArchived?: boolean;
+  /** Timestamp when session was archived (for retention policy) */
+  archivedAt?: number;
+  // Sub-session hierarchy (1 level max)
+  /** Parent session ID (if this is a sub-session). Null/undefined = root session. */
+  parentSessionId?: string;
+  /** Explicit sibling order (lazy - only populated when user reorders). */
+  siblingOrder?: number;
 }

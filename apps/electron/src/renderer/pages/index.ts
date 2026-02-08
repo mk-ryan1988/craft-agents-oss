@@ -10,7 +10,9 @@ export { default as SourceInfoPage } from './SourceInfoPage'
 export {
   SettingsNavigator,
   AppSettingsPage,
+  AiSettingsPage,
   AppearanceSettingsPage,
+  InputSettingsPage,
   WorkspaceSettingsPage,
   PermissionsSettingsPage,
   LabelsSettingsPage,

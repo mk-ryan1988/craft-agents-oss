@@ -10,6 +10,7 @@ import * as React from 'react'
 import { createContext, useContext, useCallback } from 'react'
 import { useAtomValue } from 'jotai'
 import type { RichTextInputHandle } from '@/components/ui/rich-text-input'
+import type { ChatDisplayHandle } from '@/components/app-shell/ChatDisplay'
 import type {
   Session,
   Workspace,
@@ -23,7 +24,10 @@ import type {
   LoadedSkill,
   NewChatActionParams,
   CreateSessionOptions,
+  AuthType,
+  LlmConnectionWithStatus,
 } from '../../shared/types'
+import type { AgentCapabilities } from '@craft-agent/shared/agent/backend'
 import type { TodoState as TodoStateConfig } from '@/config/todo-states'
 import type { SessionOptions, SessionOptionUpdates } from '../hooks/useSessionOptions'
 import { defaultSessionOptions } from '../hooks/useSessionOptions'
@@ -36,9 +40,21 @@ export interface AppShellContextType {
   // from retaining the full messages array and causing memory leaks.
   workspaces: Workspace[]
   activeWorkspaceId: string | null
-  currentModel: string
+  /** Workspace slug for SDK skill qualification (derived from workspace path) */
+  activeWorkspaceSlug: string | null
+  modelDefaults: import('@craft-agent/shared/config/models').ModelDefaults
   /** When set, a custom model overrides the Anthropic model selector (e.g. OpenRouter) */
   customModel: string | null
+  /** Current authentication type (determines which backend is active) */
+  authType: AuthType | null
+  /** Backend capabilities (models, thinking levels) - null until backend ready */
+  capabilities: AgentCapabilities | null
+  /** All LLM connections with authentication status */
+  llmConnections: LlmConnectionWithStatus[]
+  /** Default LLM connection slug for the current workspace */
+  workspaceDefaultLlmConnection?: string
+  /** Refresh LLM connections from config */
+  refreshLlmConnections: () => Promise<void>
   pendingPermissions: Map<string, PermissionRequest[]>
   pendingCredentials: Map<string, CredentialRequest[]>
   /** Get draft input text for a session - reads from ref without triggering re-renders */
@@ -62,10 +78,12 @@ export interface AppShellContextType {
 
   // Session callbacks
   onCreateSession: (workspaceId: string, options?: CreateSessionOptions) => Promise<Session>
-  onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[]) => void
+  onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], badges?: import('@craft-agent/core').ContentBadge[]) => void
   onRenameSession: (sessionId: string, name: string) => void
   onFlagSession: (sessionId: string) => void
   onUnflagSession: (sessionId: string) => void
+  onArchiveSession: (sessionId: string) => void
+  onUnarchiveSession: (sessionId: string) => void
   onMarkSessionRead: (sessionId: string) => void
   onMarkSessionUnread: (sessionId: string) => void
   /** Track which session user is viewing (for unread state machine) */
@@ -92,8 +110,8 @@ export interface AppShellContextType {
   onOpenFile: (path: string) => void
   onOpenUrl: (url: string) => void
 
-  // Model
-  onModelChange: (model: string) => void
+  // Model defaults
+  refreshModelDefaults: () => Promise<void>
   /** Re-fetch custom model from billing config (call after API connection changes) */
   refreshCustomModel: () => Promise<void>
 
@@ -127,6 +145,18 @@ export interface AppShellContextType {
 
   // Right sidebar button (for page headers)
   rightSidebarButton?: React.ReactNode
+
+  // Session list search state (for ChatDisplay highlighting)
+  /** Current search query from session list - used to highlight matches in ChatDisplay */
+  sessionListSearchQuery?: string
+  /** Whether search mode is active (prevents focus stealing to chat input even with empty query) */
+  isSearchModeActive?: boolean
+  /** Callback to update session list search query */
+  setSessionListSearchQuery?: (query: string) => void
+  /** Ref to ChatDisplay for navigation between matches */
+  chatDisplayRef?: React.RefObject<ChatDisplayHandle>
+  /** Callback when ChatDisplay match info changes (for immediate UI updates) */
+  onChatMatchInfoChange?: (info: { count: number; index: number }) => void
 }
 
 const AppShellContext = createContext<AppShellContextType | null>(null)

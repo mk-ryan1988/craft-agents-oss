@@ -26,6 +26,10 @@ export interface TerminalPreviewOverlayProps {
   description?: string
   /** Theme mode */
   theme?: 'light' | 'dark'
+  /** Optional error state */
+  error?: string
+  /** Render inline without dialog (for playground) */
+  embedded?: boolean
 }
 
 function getToolConfig(toolType: ToolType): {

@@ -7,6 +7,7 @@
 import * as React from 'react'
 import { BookOpen, PenLine } from 'lucide-react'
 import { PreviewOverlay } from './PreviewOverlay'
+import { ContentFrame } from './ContentFrame'
 import { ShikiCodeViewer } from '../code-viewer/ShikiCodeViewer'
 import { truncateFilePath } from '../code-viewer/language-map'
 
@@ -35,6 +36,10 @@ export interface CodePreviewOverlayProps {
   error?: string
   /** Callback to open file in external editor */
   onOpenFile?: (filePath: string) => void
+  /** Render inline without dialog (for playground) */
+  embedded?: boolean
+  /** Original shell command (for Codex reads) - shown above code */
+  command?: string
 }
 
 export function CodePreviewOverlay({
@@ -50,6 +55,8 @@ export function CodePreviewOverlay({
   theme: _theme, // Deprecated: theme is now auto-detected from DOM
   error,
   onOpenFile,
+  embedded,
+  command,
 }: CodePreviewOverlayProps) {
   // Build subtitle with line info
   const subtitle =
@@ -71,14 +78,31 @@ export function CodePreviewOverlay({
       subtitle={subtitle}
       error={error ? { label: mode === 'write' ? 'Write Failed' : 'Read Failed', message: error } : undefined}
     >
-      <div className="h-full bg-background">
-        <ShikiCodeViewer
-          code={content}
-          filePath={filePath}
-          language={language}
-          startLine={startLine}
-        />
-      </div>
+      {/* Show command if present (Codex reads via shell commands) */}
+      {command && (
+        <div className="px-6 mb-4">
+          <div className="w-full max-w-[850px] mx-auto">
+            <div className="bg-background shadow-minimal rounded-[8px] px-4 py-3 font-mono">
+              <div className="text-xs font-semibold text-muted-foreground/70 mb-1">Command</div>
+              <div className="text-sm text-foreground overflow-x-auto">
+                <span className="text-muted-foreground select-none">$ </span>
+                <span>{command}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ContentFrame title="Code" fitContent minWidth={850}>
+        <div>
+          <ShikiCodeViewer
+            code={content}
+            filePath={filePath}
+            language={language}
+            startLine={startLine}
+          />
+        </div>
+      </ContentFrame>
     </PreviewOverlay>
   )
 }

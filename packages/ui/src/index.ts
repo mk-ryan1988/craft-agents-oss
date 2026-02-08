@@ -35,6 +35,11 @@ export {
   SystemMessage,
   FileTypeIcon,
   getFileTypeLabel,
+  // Inline execution for EditPopover
+  InlineExecution,
+  mapToolEventToActivity,
+  SIZE_CONFIG,
+  ActivityStatusIcon,
   type SessionViewerProps,
   type SessionViewerMode,
   type TurnCardProps,
@@ -45,8 +50,12 @@ export {
   type SystemMessageType,
   type FileTypeIconProps,
   type ActivityItem,
+  type ActivityStatus,
   type ResponseContent,
   type TodoItem,
+  type InlineExecutionProps,
+  type InlineExecutionStatus,
+  type InlineActivityItem,
 } from './components/chat'
 
 // Markdown
@@ -90,6 +99,8 @@ export {
   ShikiCodeViewer,
   ShikiDiffViewer,
   getDiffStats,
+  UnifiedDiffViewer,
+  getUnifiedDiffStats,
   DiffViewerControls,
   DiffSplitIcon,
   DiffUnifiedIcon,
@@ -100,6 +111,7 @@ export {
   truncateFilePath,
   type ShikiCodeViewerProps,
   type ShikiDiffViewerProps,
+  type UnifiedDiffViewerProps,
   type DiffViewerControlsProps,
 } from './components/code-viewer'
 

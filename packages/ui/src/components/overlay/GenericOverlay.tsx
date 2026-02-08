@@ -140,7 +140,7 @@ export function GenericOverlay({
       isOpen={isOpen}
       onClose={onClose}
       theme={theme}
-      typeBadge={{
+      badge={{
         icon: FileCode,
         label: detectedLanguage,
         variant: 'gray',

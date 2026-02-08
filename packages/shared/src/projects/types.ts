@@ -23,6 +23,8 @@ export interface ProjectConfig {
   slug: string;
   /** Absolute path to git repo root */
   rootPath: string;
+  /** Label ID to auto-assign to sessions created in this project */
+  labelId?: string;
   /** Custom scripts (future: build, test, deploy, etc.) */
   scripts?: Record<string, string>;
   /** Timestamps */

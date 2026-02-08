@@ -21,7 +21,7 @@ export interface SidebarContextMenuConfig {
   statusId?: string
   /** Label ID — when set, this is an individual label (enables Delete Label) */
   labelId?: string
-  /** Handler for "Configure Statuses" action - for allChats/status/flagged types */
+  /** Handler for "Configure Statuses" action - for allSessions/status/flagged types */
   onConfigureStatuses?: () => void
   /** Handler for "Configure Labels" action - receives labelId when triggered from a specific label */
   onConfigureLabels?: (labelId?: string) => void
@@ -55,7 +55,7 @@ export interface SortableConfig {
 }
 
 export interface LinkItem {
-  id: string            // Unique ID for navigation (e.g., 'nav:allChats')
+  id: string            // Unique ID for navigation (e.g., 'nav:allSessions')
   title: string
   label?: string        // Optional badge (e.g., count)
   icon: LucideIcon | React.ReactNode  // LucideIcon or custom React element
@@ -501,7 +501,7 @@ const SidebarButton = React.forwardRef<HTMLButtonElement, SidebarButtonProps & R
             {link.afterTitle}
           </span>
         )}
-        {/* Label Badge: Shows count or status on the right */}
+        {/* Label Badge: Shows count or status on the right, revealed on section hover */}
         {link.label && (
           <span className={cn(link.afterTitle ? 'ml-0' : 'ml-auto', 'text-xs text-foreground/30 opacity-0 group-hover/section:opacity-100 group-data-[state=open]:opacity-100 group-data-[edit-active=true]:opacity-100 transition-opacity')}>
             {link.label}
@@ -538,9 +538,13 @@ function renderIcon(link: LinkItem) {
   }
   // Already a React element or primitive ReactNode
   // Clone with bare={true} to remove EntityIcon container, wrapper provides sizing
+  // Only pass bare to components that accept it (have acceptsBare marker) to avoid
+  // forwarding unknown props to DOM elements (e.g., Lucide icons → SVG)
   const iconElement = link.icon as React.ReactNode
   const bareIcon = React.isValidElement(iconElement)
-    ? React.cloneElement(iconElement as React.ReactElement<{ bare?: boolean }>, { bare: true })
+    ? (typeof iconElement.type === 'function' && (iconElement.type as { acceptsBare?: boolean }).acceptsBare)
+      ? React.cloneElement(iconElement as React.ReactElement<{ bare?: boolean }>, { bare: true })
+      : iconElement
     : iconElement
   return (
     <span

@@ -130,7 +130,7 @@ export function PDFPreviewOverlay({
       isOpen={isOpen}
       onClose={onClose}
       theme={theme}
-      typeBadge={{
+      badge={{
         icon: FileText,
         label: 'PDF',
         variant: 'orange',

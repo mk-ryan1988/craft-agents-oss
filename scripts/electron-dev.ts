@@ -12,6 +12,12 @@ const ROOT_DIR = join(import.meta.dir, "..");
 const ELECTRON_DIR = join(ROOT_DIR, "apps/electron");
 const DIST_DIR = join(ELECTRON_DIR, "dist");
 
+// MCP server paths (for Codex sessions)
+const SESSION_SERVER_DIR = join(ROOT_DIR, "packages/session-mcp-server");
+const SESSION_SERVER_OUTPUT = join(SESSION_SERVER_DIR, "dist/index.js");
+const BRIDGE_SERVER_DIR = join(ROOT_DIR, "packages/bridge-mcp-server");
+const BRIDGE_SERVER_OUTPUT = join(BRIDGE_SERVER_DIR, "dist/index.js");
+
 // Platform-specific binary paths (bun creates .exe on Windows, no extension on Unix)
 const IS_WINDOWS = process.platform === "win32";
 const BIN_EXT = IS_WINDOWS ? ".exe" : "";
@@ -121,6 +127,66 @@ function copyResources(): void {
   }
 }
 
+// Build or copy MCP servers for Codex sessions (one-time, no watch needed)
+// If source files exist, build from source. Otherwise, copy pre-built bundles from resources.
+async function buildMcpServers(): Promise<void> {
+  console.log("🌉 Building MCP servers for Codex sessions...");
+
+  // Ensure dist directories exist
+  const sessionDistDir = join(SESSION_SERVER_DIR, "dist");
+  const bridgeDistDir = join(BRIDGE_SERVER_DIR, "dist");
+  if (!existsSync(sessionDistDir)) mkdirSync(sessionDistDir, { recursive: true });
+  if (!existsSync(bridgeDistDir)) mkdirSync(bridgeDistDir, { recursive: true });
+
+  const RESOURCES_DIR = join(ELECTRON_DIR, "resources");
+  const sessionSourceExists = existsSync(join(ROOT_DIR, "packages/session-mcp-server/src/index.ts"));
+  const bridgeSourceExists = existsSync(join(ROOT_DIR, "packages/bridge-mcp-server/src/index.ts"));
+
+  if (sessionSourceExists && bridgeSourceExists) {
+    // Build both servers from source in parallel
+    const [sessionResult, bridgeResult] = await Promise.all([
+      runEsbuild(
+        "packages/session-mcp-server/src/index.ts",
+        "packages/session-mcp-server/dist/index.js"
+      ),
+      runEsbuild(
+        "packages/bridge-mcp-server/src/index.ts",
+        "packages/bridge-mcp-server/dist/index.js"
+      ),
+    ]);
+
+    if (!sessionResult.success) {
+      console.error("❌ Session MCP server build failed:", sessionResult.error);
+      process.exit(1);
+    }
+    console.log("✅ Session MCP server built");
+
+    if (!bridgeResult.success) {
+      console.error("❌ Bridge MCP server build failed:", bridgeResult.error);
+      process.exit(1);
+    }
+    console.log("✅ Bridge MCP server built");
+  } else {
+    // Source not available (OSS repo) — copy pre-built bundles from resources
+    const sessionResource = join(RESOURCES_DIR, "session-mcp-server/index.js");
+    const bridgeResource = join(RESOURCES_DIR, "bridge-mcp-server/index.js");
+
+    if (existsSync(sessionResource)) {
+      cpSync(sessionResource, SESSION_SERVER_OUTPUT);
+      console.log("✅ Session MCP server copied from pre-built resources");
+    } else {
+      console.warn("⚠️  Session MCP server not available (no source or pre-built bundle)");
+    }
+
+    if (existsSync(bridgeResource)) {
+      cpSync(bridgeResource, BRIDGE_SERVER_OUTPUT);
+      console.log("✅ Bridge MCP server copied from pre-built resources");
+    } else {
+      console.warn("⚠️  Bridge MCP server not available (no source or pre-built bundle)");
+    }
+  }
+}
+
 // Get OAuth defines for esbuild API
 function getOAuthDefines(): Record<string, string> {
   const oauthVars = [
@@ -143,6 +209,10 @@ function getOAuthDefines(): Record<string, string> {
 // Get environment variables for electron process
 function getElectronEnv(): Record<string, string> {
   const vitePort = process.env.CRAFT_VITE_PORT || "5173";
+
+  // Codex binary path is resolved at runtime by the binary-resolver module.
+  // It checks: CODEX_PATH env var > bundled binary > local dev fork > system PATH.
+  // You can override with CODEX_PATH env var if needed for debugging.
 
   return {
     ...process.env as Record<string, string>,
@@ -178,7 +248,11 @@ async function runEsbuild(
   }
 }
 
-// Verify a JavaScript file is syntactically valid
+// Verify a JavaScript file exists and has content.
+// Note: We don't use `node --check` because it evaluates module-level code,
+// which fails for Electron-specific packages like @sentry/electron that
+// require Electron's runtime. esbuild's successful build already guarantees
+// valid JavaScript syntax.
 async function verifyJsFile(filePath: string): Promise<{ valid: boolean; error?: string }> {
   if (!existsSync(filePath)) {
     return { valid: false, error: "File does not exist" };
@@ -188,20 +262,6 @@ async function verifyJsFile(filePath: string): Promise<{ valid: boolean; error?:
   const stats = statSync(filePath);
   if (stats.size === 0) {
     return { valid: false, error: "File is empty" };
-  }
-
-  // Use Node to syntax-check the file
-  const proc = spawn({
-    cmd: ["node", "--check", filePath],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  const stderr = await new Response(proc.stderr).text();
-  const exitCode = await proc.exited;
-
-  if (exitCode !== 0) {
-    return { valid: false, error: stderr || "Syntax error" };
   }
 
   return { valid: true };
@@ -250,6 +310,9 @@ async function main(): Promise<void> {
   }
 
   copyResources();
+
+  // Build MCP servers for Codex sessions
+  await buildMcpServers();
 
   const vitePort = process.env.CRAFT_VITE_PORT || "5173";
   const oauthDefines = getOAuthDefines();

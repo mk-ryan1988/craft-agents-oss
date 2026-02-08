@@ -42,7 +42,7 @@ export function DataTableOverlay({
       isOpen={isOpen}
       onClose={onClose}
       theme={theme}
-      typeBadge={{
+      badge={{
         icon: Table2,
         label: 'Table',
         variant: badgeVariant,

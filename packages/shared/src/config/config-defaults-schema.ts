@@ -1,6 +1,8 @@
 /**
- * Schema for config-defaults.json
- * This file contains the default values for all configuration options.
+ * TypeScript types for config-defaults.json
+ *
+ * Source of truth: apps/electron/resources/config-defaults.json
+ * This file only defines types - the actual defaults come from the bundled JSON.
  */
 
 import type { AuthType } from '@craft-agent/core/types';
@@ -15,6 +17,10 @@ export interface ConfigDefaults {
     notificationsEnabled: boolean;
     soundEnabled: boolean;
     colorTheme: string;
+    autoCapitalisation: boolean;
+    sendMessageKey: 'enter' | 'cmd-enter';
+    spellCheck: boolean;
+    keepAwakeWhileRunning: boolean;
   };
   workspaceDefaults: {
     thinkingLevel: ThinkingLevel;
@@ -25,26 +31,3 @@ export interface ConfigDefaults {
     };
   };
 }
-
-/**
- * Bundled defaults (shipped with the app)
- * This is the source of truth for default values.
- */
-export const BUNDLED_CONFIG_DEFAULTS: ConfigDefaults = {
-  version: '1.0',
-  description: 'Default configuration values for Craft Agent',
-  defaults: {
-    authType: 'api_key',
-    notificationsEnabled: true,
-    soundEnabled: true,
-    colorTheme: 'default',
-  },
-  workspaceDefaults: {
-    thinkingLevel: 'think',
-    permissionMode: 'safe', // NEW: was 'ask' before
-    cyclablePermissionModes: ['safe', 'ask', 'allow-all'],
-    localMcpServers: {
-      enabled: true,
-    },
-  },
-};
